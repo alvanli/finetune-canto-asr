@@ -1,0 +1,43 @@
+version: "3.8"
+services:
+  alv_shit:
+    ipc: host
+    # ports:
+    #   - "8869:8869"
+    #   - "8870:8870"
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: "alv/alv_shit:debug"
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            device_ids: ['1','2','3','4'] # Change to ['0', '1'] to use two GPUs
+            # device_ids: ['1','2','3', '4'] # Change to ['0', '1'] to use two GPUs
+            capabilities: [gpu]
+    tty: true 
+    volumes:
+      - /home/ch35li/ehr/embeddings_exp:/exp
+      - /mnt/wato-drive/medical-ai-lab/hf_ds:/data
+
+  # alv_shit_thor:
+  #   ipc: host
+  #   # ports:
+  #   #   - "8869:8869"
+  #   #   - "8870:8870"
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile
+  #   image: "alv/alv_shit_thor:debug"
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #         - driver: nvidia
+  #           device_ids: ['0','1'] # Change to ['0', '1'] to use two GPUs
+  #           capabilities: [gpu]
+  #   tty: true 
+  #   volumes:
+  #     - /home/ch35li/ehr/embeddings_exp:/exp

@@ -1,3 +1,12 @@
+cn_model_out_trpro/*
+*.txt
+model_out_trpro/*
+model_out_trpro_ptrtrained_on_mando/*
+*.json
+*.bin
+events*
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
