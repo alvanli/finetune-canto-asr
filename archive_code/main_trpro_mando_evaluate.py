@@ -18,7 +18,10 @@ from transformers import TrainerCallback, Seq2SeqTrainer
 
 import evaluate
 
-metric = evaluate.load("wer")
+from opencc import OpenCC
+cc = OpenCC('s2t')
+
+metric = evaluate.load("cer")
 
 # canto_tok = AutoTokenizer.from_pretrained("./tokenizer/tokenizer-canto")
 
@@ -75,7 +78,6 @@ def load_streaming_dataset(dataset_name, dataset_config_name, split, **kwargs):
         dataset = load_dataset(dataset_name, dataset_config_name, split=split, streaming=True, **kwargs)
         return dataset
 
-
 def prepare_dataset(batch):
     # load and (possibly) resample audio data to 16kHz
     audio = batch["audio"]
@@ -93,7 +95,8 @@ def prepare_dataset(batch):
         transcription = normalizer(transcription).strip()
     
     # encode target text to label ids
-    batch["labels"] = processor.tokenizer(transcription).input_ids
+    traditional_c = cc.convert(transcription)
+    batch["labels"] = processor.tokenizer(traditional_c).input_ids
     return batch
 
 class ShuffleCallback(TrainerCallback):
@@ -106,21 +109,111 @@ class ShuffleCallback(TrainerCallback):
 
 if __name__ == "__main__":
 
-    saved_ds_dir = "/data/processed_common_11_hk"
-    processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
+    saved_ds_dir = "/data/processed_common_11_cn"
+    WHISPER_MODEL = "./cn_model_out_trpro/checkpoint-5000"
+    processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, task="transcribe")
 
-    ds_train = load_dataset("mozilla-foundation/common_voice_11_0", "yue", split="train+validation", use_auth_token=True)  # set split="train+validation" for low-resource
-    ds_test = load_dataset("mozilla-foundation/common_voice_11_0", "yue", split="test", use_auth_token=True)
+    if not os.path.exists(saved_ds_dir+"/train"):
+        # raw_datasets = IterableDatasetDict()
 
-
-    print(f"These are the ds features {ds_train.features}")
-
-    ds_train = ds_train.cast_column("audio", Audio(sampling_rate=16000))
-    ds_train_vect = ds_train.map(prepare_dataset, remove_columns=list(ds_train.features.keys())).with_format("torch")
-    ds_train_vect.save_to_disk(saved_ds_dir+"/train_yue")
-
-    ds_test = ds_test.cast_column("audio", Audio(sampling_rate=16000))
-    ds_test_vect = ds_test.map(prepare_dataset, remove_columns=list(ds_test.features.keys())).with_format("torch")
-    ds_test_vect.save_to_disk(saved_ds_dir+"/test_yue")
+        ds_train = load_dataset("mozilla-foundation/common_voice_11_0", "zh-CN", split="train+validation", use_auth_token=True)  # set split="train+validation" for low-resource
+        ds_test = load_dataset("mozilla-foundation/common_voice_11_0", "zh-CN", split="test", use_auth_token=True)
 
 
+        print(f"These are the ds features {ds_train.features}")
+
+        ds_train = ds_train.cast_column("audio", Audio(sampling_rate=16000))
+        ds_train_vect = ds_train.map(prepare_dataset, remove_columns=list(ds_train.features.keys())).with_format("torch")
+        ds_train_vect.save_to_disk(saved_ds_dir+"/train")
+
+        ds_test = ds_test.cast_column("audio", Audio(sampling_rate=16000))
+        ds_test_vect = ds_test.map(prepare_dataset, remove_columns=list(ds_test.features.keys())).with_format("torch")
+        ds_test_vect.save_to_disk(saved_ds_dir+"/test")
+
+        ds_train_vect = ds_train_vect.shuffle(
+            seed=0
+        )
+
+        ds_train_vect = ds_train_vect.filter(
+            is_audio_in_length_range,
+            input_columns=["input_length"],
+        )
+
+        ds_train_vect.save_to_disk(saved_ds_dir+"/train_filtered")
+
+    else:
+        ds_train_vect = load_from_disk(saved_ds_dir+"/train_filtered")
+        ds_test_vect = load_from_disk(saved_ds_dir+"/test")
+
+
+    data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
+
+    def compute_metrics(pred):
+        pred_ids = pred.predictions
+        label_ids = pred.label_ids
+
+        # replace -100 with the pad_token_id
+        label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
+
+        # we do not want to group tokens when computing the metrics
+        pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+        label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+        if do_normalize_eval:
+            pred_str = [normalizer(pred) for pred in pred_str]
+            label_str = [normalizer(label) for label in label_str]
+
+        cer = 100 * metric.compute(predictions=pred_str, references=label_str)
+
+        return {"cer": cer}
+
+    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL)
+
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+    model.config.use_cache = False
+
+    output_dir="/exp/whisper_yue/finetune-whisper-canto/cn_model_out_trpro"
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=output_dir,
+        per_device_train_batch_size=16,
+        gradient_accumulation_steps=2,  # increase by 2x for every 2x decrease in batch size
+        learning_rate=1e-5,
+        warmup_steps=500,
+        max_steps=1000,
+        gradient_checkpointing=True,
+        fp16=True,
+        evaluation_strategy="steps",
+        per_device_eval_batch_size=28,
+        predict_with_generate=True,
+        generation_max_length=225,
+        save_steps=1000,
+        eval_steps=1000,
+        logging_steps=25,
+        report_to=["tensorboard"],
+        load_best_model_at_end=True,
+        metric_for_best_model="cer",
+        greater_is_better=False,
+        push_to_hub=False,
+        do_train=False,
+        do_eval=True
+    )
+
+    print("Starting Trainer...")
+
+    trainer = Seq2SeqTrainer(
+        args=training_args,
+        model=model,
+        train_dataset=ds_train_vect,
+        eval_dataset=ds_test_vect,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+        tokenizer=processor,
+        callbacks=[ShuffleCallback()],
+    )
+
+    # print("I am here @")
+
+    # model.save_pretrained(output_dir)
+    # processor.save_pretrained(output_dir)
+
+    trainer.evaluate()

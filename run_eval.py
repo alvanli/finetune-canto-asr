@@ -52,11 +52,11 @@ def main(args):
         "automatic-speech-recognition", model=args.model_id, device=args.device
     )
 
-    whisper_asr.model.config.forced_decoder_ids = (
-        whisper_asr.tokenizer.get_decoder_prompt_ids(
-            language=args.language, task="transcribe"
-        )
-    )
+    # whisper_asr.model.config.forced_decoder_ids = (
+    #     whisper_asr.tokenizer.get_decoder_prompt_ids(
+    #         language=args.language, task="transcribe"
+    #     )
+    # )
 
     dataset = load_dataset(
         args.dataset,

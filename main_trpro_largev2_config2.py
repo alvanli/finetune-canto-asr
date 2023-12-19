@@ -1,5 +1,6 @@
 # https://huggingface.co/docs/datasets/audio_dataset
 import os
+os.environ['LD_LIBRARY_PATH']='/usr/lib/x86_64-linux-gnu/:/opt/conda/lib/'
 import datasets
 from pathlib import Path
 datasets.config.DOWNLOADED_DATASETS_PATH = Path("/exp/hf_ds")
@@ -105,12 +106,40 @@ class ShuffleCallback(TrainerCallback):
 
 
 if __name__ == "__main__":
+    peft_model_id = "alvanlii/whisper-largev2-cantonese-peft-lora"
+    peft_config = PeftConfig.from_pretrained(peft_model_id)
+        model = WhisperForConditionalGeneration.from_pretrained(
+        peft_config.base_model_name_or_path, load_in_8bit=True, device_map="auto"
+    )
+    model = PeftModel.from_pretrained(model, peft_model_id)
+    # model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=True, device_map="auto")
+    # print("Loaded model")
+
+    # from peft import prepare_model_for_int8_training
+    # model = prepare_model_for_int8_training(model, output_embedding_layer_name="proj_out")
+
+    # from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model
+
+    # config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
+
+    # model = get_peft_model(model, config)
+    model.print_trainable_parameters()
+
+    print("Loaded PEFT LORA Model")
+
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+    model.config.use_cache = False
+
 
     saved_ds_dir = "/data2/processed_canto"
     # processed_dir = "/data2/processed_common_11_hk/combined_train_filtered"
     processed_dir = saved_ds_dir+"/aug_combined_train_filtered"
-    processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
+    WHISPER_MODEL = "openai/whisper-large-v2"
+    processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, task="transcribe")
     
+    print("Loaded processor")
+
     if not os.path.exists(processed_dir):
         ds_train_vect = load_from_disk("/data2/aug_combined_canto")
         ds_test_vect = load_from_disk("/data2/processed_common_11_hk/test")
@@ -131,8 +160,6 @@ if __name__ == "__main__":
 
     print("Loaded datasets")
 
-    WHISPER_MODEL = "openai/whisper-small"
-    processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, task="transcribe")
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
 
@@ -155,39 +182,31 @@ if __name__ == "__main__":
         return {"cer": cer}
 
 
-    model = WhisperForConditionalGeneration.from_pretrained("./model_out_trpro_more/checkpoint-5000")
-
-    print("Loaded model")
-
-    model.config.forced_decoder_ids = None
-    model.config.suppress_tokens = []
-    model.config.use_cache = False
-
-    output_dir="./model_out_trpro_more_more"
+    output_dir="./model_out_largev2_further"
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=25,
-        gradient_accumulation_steps=2,  # increase by 2x for every 2x decrease in batch size
-        learning_rate=5e-5,
+        per_device_train_batch_size=60,
+        gradient_accumulation_steps=1,  # increase by 2x for every 2x decrease in batch size
+        learning_rate=5e-4,
         warmup_steps=500,
-        max_steps=15000,
+        max_steps=10000,
         gradient_checkpointing=True,
         num_train_epochs=5,
-        fp16=True,
         evaluation_strategy="steps",
-        per_device_eval_batch_size=8,
+        per_device_eval_batch_size=32,
         predict_with_generate=True,
         generation_max_length=225,
-        save_steps=500,
-        eval_steps=500,
-        logging_steps=25,
+        save_steps=1000,
+        eval_steps=1000,
+        fp16=True,
+        logging_steps=100,
         report_to=["tensorboard"],
         load_best_model_at_end=True,
-        metric_for_best_model="cer",
-        greater_is_better=False,
         push_to_hub=False,
-        save_total_limit=5
+        save_total_limit=3,
+        remove_unused_columns=False,  # required as the PeftModel forward doesn't have the signature of the wrapped model's forward
+        label_names=["labels"],  # same reason as above
     )
 
     print("Starting Trainer...")
@@ -198,7 +217,7 @@ if __name__ == "__main__":
         train_dataset=ds_train_vect,
         eval_dataset=ds_test_vect,
         data_collator=data_collator,
-        compute_metrics=compute_metrics,
+        # compute_metrics=compute_metrics,
         tokenizer=processor,
         callbacks=[ShuffleCallback()],
     )
@@ -208,3 +227,38 @@ if __name__ == "__main__":
     processor.save_pretrained(output_dir)
 
     trainer.train()
+
+
+    print("Starting Evaluation")
+    
+    import gc
+    import numpy as np
+    from torch.utils.data import DataLoader
+
+    eval_dataloader = DataLoader(ds_test_vect, batch_size=10, collate_fn=data_collator)
+
+    model.eval()
+    for step, batch in enumerate(tqdm(eval_dataloader)):
+        with torch.cuda.amp.autocast():
+            with torch.no_grad():
+                generated_tokens = (
+                    model.generate(
+                        input_features=batch["input_features"].to("cuda"),
+                        decoder_input_ids=batch["labels"][:, :4].to("cuda"),
+                        max_new_tokens=255,
+                    )
+                    .cpu()
+                    .numpy()
+                )
+                labels = batch["labels"].cpu().numpy()
+                labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+                decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+                decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+                metric.add_batch(
+                    predictions=decoded_preds,
+                    references=decoded_labels,
+                )
+        del generated_tokens, labels, batch
+        gc.collect()
+    
+    print(metric.compute())

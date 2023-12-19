@@ -139,7 +139,9 @@ def load_canto_asr_2():
     audio_base_path = BASE_DIR + "/cantonese-asr/dataset/zippy/audio"
     transcript_base_path = BASE_DIR + "/cantonese-asr/dataset/zippy/transcription"
     all_audio_files = glob.glob(audio_base_path+"/*.wav")
-    with open("/exp/hf_ds/canto_asr/metadata.csv", "w") as meta_f:
+    output_base_path = BASE_DIR + "/cantonese-asr/processed"
+
+    with open(output_base_path + "/metadata.csv", "w") as meta_f:
         meta_f.write("file_name,transcription\n")
 
     for audio_file in tqdm(all_audio_files):
@@ -147,8 +149,8 @@ def load_canto_asr_2():
         with open(transcript_file, "r", encoding="utf-8") as f:
             content = f.read()
         file_name = os.path.basename(audio_file).split(".")[0]
-        shutil.copyfile(audio_file, f"/exp/hf_ds/canto_asr/data/{file_name}.wav")
-        with open("/exp/hf_ds/canto_asr/metadata.csv", "a") as meta_f:
+        shutil.copyfile(audio_file, f"{output_base_path}/data/{file_name}.wav")
+        with open(output_base_path + "/metadata.csv", "a") as meta_f:
             meta_f.write(f"data/{file_name}.wav,{content}\n")
 
 def prepare_dataset(batch):
@@ -188,9 +190,9 @@ def load_mdcc():
     return
 
 if __name__ == "__main__":
-    merge_map_asr()
+    # merge_map_asr()
     # process_canto_map_2()
-    # load_canto_asr_2()
+    load_canto_asr_2()
     # processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
     # load_canto_asr(processor)
     # load_canto_map(processor)

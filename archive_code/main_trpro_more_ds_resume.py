@@ -2,7 +2,7 @@
 import os
 import datasets
 from pathlib import Path
-datasets.config.DOWNLOADED_DATASETS_PATH = Path("/data/hf_cache")
+datasets.config.DOWNLOADED_DATASETS_PATH = Path("/exp/hf_cache")
 
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 from dataclasses import dataclass
@@ -18,7 +18,7 @@ from transformers import TrainerCallback, Seq2SeqTrainer
 
 import evaluate
 
-metric = evaluate.load("wer")
+metric = evaluate.load("cer")
 
 # canto_tok = AutoTokenizer.from_pretrained("./tokenizer/tokenizer-canto")
 
@@ -107,20 +107,105 @@ class ShuffleCallback(TrainerCallback):
 if __name__ == "__main__":
 
     saved_ds_dir = "/data/processed_common_11_hk"
-    processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
+    WHISPER_MODEL = "./model_out_trpro_full_canto"
 
-    ds_train = load_dataset("mozilla-foundation/common_voice_11_0", "yue", split="train+validation", use_auth_token=True)  # set split="train+validation" for low-resource
-    ds_test = load_dataset("mozilla-foundation/common_voice_11_0", "yue", split="test", use_auth_token=True)
+    if not os.path.exists(saved_ds_dir+"/combined_train_filtered"):
+        ds_train_vect = load_from_disk("/data/combined_canto")
+        ds_test_vect = load_from_disk(saved_ds_dir+"/test")
+
+        ds_train_vect = ds_train_vect.shuffle(
+            seed=0
+        )
+
+        ds_train_vect = ds_train_vect.filter(
+            is_audio_in_length_range,
+            input_columns=["input_length"],
+        )
+        ds_train_vect.save_to_disk(saved_ds_dir+"/combined_train_filtered")
+    else:
+        ds_train_vect = load_from_disk(saved_ds_dir+"/combined_train_filtered")
+        ds_test_vect = load_from_disk(saved_ds_dir+"/test")
 
 
-    print(f"These are the ds features {ds_train.features}")
+    processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, task="transcribe")
+    data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
-    ds_train = ds_train.cast_column("audio", Audio(sampling_rate=16000))
-    ds_train_vect = ds_train.map(prepare_dataset, remove_columns=list(ds_train.features.keys())).with_format("torch")
-    ds_train_vect.save_to_disk(saved_ds_dir+"/train_yue")
+    def compute_metrics(pred):
+        pred_ids = pred.predictions
+        label_ids = pred.label_ids
 
-    ds_test = ds_test.cast_column("audio", Audio(sampling_rate=16000))
-    ds_test_vect = ds_test.map(prepare_dataset, remove_columns=list(ds_test.features.keys())).with_format("torch")
-    ds_test_vect.save_to_disk(saved_ds_dir+"/test_yue")
+        # replace -100 with the pad_token_id
+        label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
 
+        # we do not want to group tokens when computing the metrics
+        pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+        label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+        if do_normalize_eval:
+            pred_str = [normalizer(pred) for pred in pred_str]
+            label_str = [normalizer(label) for label in label_str]
 
+        cer = 100 * metric.compute(predictions=pred_str, references=label_str)
+
+        return {"cer": cer}
+
+    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL)
+
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+    model.config.use_cache = False
+
+    output_dir="./model_out_trpro_full_canto_resume"
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=output_dir,
+        per_device_train_batch_size=30,
+        gradient_accumulation_steps=4,  # increase by 2x for every 2x decrease in batch size
+        learning_rate=1e-5,
+        warmup_steps=500,
+        max_steps=5000,
+        gradient_checkpointing=True,
+        fp16=True,
+        evaluation_strategy="steps",
+        per_device_eval_batch_size=8,
+        predict_with_generate=True,
+        generation_max_length=225,
+        save_steps=1000,
+        eval_steps=1000,
+        logging_steps=25,
+        report_to=["tensorboard"],
+        load_best_model_at_end=True,
+        metric_for_best_model="cer",
+        greater_is_better=False,
+        push_to_hub=False,
+    )
+
+    print("Starting Trainer...")
+
+    trainer = Seq2SeqTrainer(
+        args=training_args,
+        model=model,
+        train_dataset=ds_train_vect,
+        eval_dataset=ds_test_vect,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+        tokenizer=processor,
+        callbacks=[ShuffleCallback()],
+    )
+
+    # print("I am here @")
+
+    model.save_pretrained(output_dir)
+    processor.save_pretrained(output_dir)
+
+    trainer.train()
+
+    # kwargs = {
+    #     "dataset_tags": "mozilla-foundation/common_voice_11_0",
+    #     "dataset": "Common Voice 11.0",  # a 'pretty' name for the training dataset
+    #     "language": "zh-HK",
+    #     "model_name": "Whisper Small Canto - Alvin",  # a 'pretty' name for your model
+    #     "finetuned_from": "openai/whisper-small",
+    #     "tasks": "automatic-speech-recognition",
+    #     "tags": "whisper-event",
+    # }
+
+    # trainer.push_to_hub(**kwargs)
