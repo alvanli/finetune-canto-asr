@@ -1,7 +1,5 @@
-cn_model_out_trpro/*
 *.txt
 model_out_*/*
-model_out_trpro_ptrtrained_on_mando/*
 *.json
 *.bin
 events*

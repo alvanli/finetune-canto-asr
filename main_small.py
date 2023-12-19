@@ -2,7 +2,7 @@
 import os
 import datasets
 from pathlib import Path
-datasets.config.DOWNLOADED_DATASETS_PATH = Path("/exp/hf_cache")
+datasets.config.DOWNLOADED_DATASETS_PATH = Path("/exp/hf_ds")
 
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 from dataclasses import dataclass
@@ -18,7 +18,7 @@ from transformers import TrainerCallback, Seq2SeqTrainer
 
 import evaluate
 
-metric = evaluate.load("wer")
+metric = evaluate.load("cer")
 
 # canto_tok = AutoTokenizer.from_pretrained("./tokenizer/tokenizer-canto")
 
@@ -106,29 +106,34 @@ class ShuffleCallback(TrainerCallback):
 
 if __name__ == "__main__":
 
-    saved_ds_dir = "/data/processed_common_11_hk"
-    WHISPER_MODEL = "openai/whisper-small"
-
-    if not os.path.exists(saved_ds_dir+"/combined_train_filtered"):
-        ds_train_vect = load_from_disk("/data/combined_canto")
-        ds_test_vect = load_from_disk(saved_ds_dir+"/test")
+    saved_ds_dir = "/data2/processed_canto"
+    processed_dir = saved_ds_dir+"/aug_combined_train_filtered"
+    processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
+    
+    if not os.path.exists(processed_dir):
+        ds_train_vect = load_from_disk("/data2/aug_combined_canto")
+        ds_test_vect = load_from_disk("/data2/processed_common_11_hk/test")
 
         ds_train_vect = ds_train_vect.shuffle(
             seed=0
         )
-
+        print(f"Before filtering {len(ds_train_vect)}")
         ds_train_vect = ds_train_vect.filter(
             is_audio_in_length_range,
             input_columns=["input_length"],
         )
-        ds_train_vect.save_to_disk(saved_ds_dir+"/combined_train_filtered")
+        print(f"After filtering {len(ds_train_vect)}")
+        ds_train_vect.save_to_disk(processed_dir)
     else:
-        ds_train_vect = load_from_disk(saved_ds_dir+"/combined_train_filtered")
-        ds_test_vect = load_from_disk(saved_ds_dir+"/test")
+        ds_train_vect = load_from_disk(processed_dir)
+        ds_test_vect = load_from_disk("/data2/processed_common_11_hk/test")
 
+    print("Loaded datasets")
 
-    processor = WhisperProcessor.from_pretrained("./cn_model_out_trpro", task="transcribe")
+    WHISPER_MODEL = "openai/whisper-small"
+    processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, task="transcribe")
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
+
 
     def compute_metrics(pred):
         pred_ids = pred.predictions
@@ -144,38 +149,44 @@ if __name__ == "__main__":
             pred_str = [normalizer(pred) for pred in pred_str]
             label_str = [normalizer(label) for label in label_str]
 
-        wer = 100 * metric.compute(predictions=pred_str, references=label_str)
+        cer = 100 * metric.compute(predictions=pred_str, references=label_str)
 
-        return {"wer": wer}
+        return {"cer": cer}
 
-    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL)
+
+    model = WhisperForConditionalGeneration.from_pretrained("./model_out_trpro_more/checkpoint-5000")
+
+    print("Loaded model")
 
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
     model.config.use_cache = False
 
-    output_dir="/exp/whisper_yue/finetune-whisper-canto/model_out_trpro_pretrained_on_mando"
+    output_dir="./model_out_trpro_more_more"
+
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=24,
+        per_device_train_batch_size=25,
         gradient_accumulation_steps=2,  # increase by 2x for every 2x decrease in batch size
-        learning_rate=1e-5,
+        learning_rate=5e-5,
         warmup_steps=500,
-        max_steps=5000,
+        max_steps=15000,
         gradient_checkpointing=True,
+        num_train_epochs=5,
         fp16=True,
         evaluation_strategy="steps",
         per_device_eval_batch_size=8,
         predict_with_generate=True,
         generation_max_length=225,
-        save_steps=1000,
-        eval_steps=1000,
+        save_steps=500,
+        eval_steps=500,
         logging_steps=25,
         report_to=["tensorboard"],
         load_best_model_at_end=True,
-        metric_for_best_model="wer",
+        metric_for_best_model="cer",
         greater_is_better=False,
         push_to_hub=False,
+        save_total_limit=5
     )
 
     print("Starting Trainer...")
@@ -190,6 +201,7 @@ if __name__ == "__main__":
         tokenizer=processor,
         callbacks=[ShuffleCallback()],
     )
+
 
     model.save_pretrained(output_dir)
     processor.save_pretrained(output_dir)

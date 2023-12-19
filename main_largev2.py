@@ -21,8 +21,6 @@ import evaluate
 
 metric = evaluate.load("cer")
 
-# canto_tok = AutoTokenizer.from_pretrained("./tokenizer/tokenizer-canto")
-
 do_lower_case = False
 do_remove_punctuation = False
 
@@ -107,13 +105,6 @@ class ShuffleCallback(TrainerCallback):
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 class PeftSavingCallback(TrainerCallback):
-    # def on_train_end(self, args, state, control, **kwargs):
-    #     peft_model_path = os.path.join(state.best_model_checkpoint, "adapter_model")
-    #     kwargs["model"].save_pretrained(peft_model_path)
-
-    #     pytorch_model_path = os.path.join(state.best_model_checkpoint, "pytorch_model.bin")
-    #     os.remove(pytorch_model_path) if os.path.exists(pytorch_model_path) else None
-
     def on_save(
         self, args, state, control, **kwargs,
     ):
@@ -129,10 +120,29 @@ class PeftSavingCallback(TrainerCallback):
             os.remove(pytorch_model_path)
         return control
 
+
 if __name__ == "__main__":
+    from peft import PeftConfig, PeftModel, LoraModel, LoraConfig, get_peft_model
+
+    peft_model_id = "alvanlii/whisper-largev2-cantonese-peft-lora"
+    peft_config = PeftConfig.from_pretrained(peft_model_id)
+    model = WhisperForConditionalGeneration.from_pretrained(
+        peft_config.base_model_name_or_path, load_in_8bit=True, device_map="auto"
+    )
+    model.enable_input_require_grads()
+    model = PeftModel.from_pretrained(model, peft_model_id)
+
+    model.print_trainable_parameters()
+
+    print("Loaded PEFT LORA Model")
+
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+    model.config.use_cache = False
+
+
 
     saved_ds_dir = "/data2/processed_canto"
-    # processed_dir = "/data2/processed_common_11_hk/combined_train_filtered"
     processed_dir = saved_ds_dir+"/aug_combined_train_filtered"
     WHISPER_MODEL = "openai/whisper-large-v2"
     processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, task="transcribe")
@@ -180,37 +190,17 @@ if __name__ == "__main__":
 
         return {"cer": cer}
 
-
-    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=True, device_map="auto")
-    print("Loaded model")
-
-    from peft import prepare_model_for_int8_training
-    model = prepare_model_for_int8_training(model, output_embedding_layer_name="proj_out")
-
-    from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model
-
-    config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
-
-    model = get_peft_model(model, config)
-    model.print_trainable_parameters()
-
-    print("Loaded PEFT LORA Model")
-
-    model.config.forced_decoder_ids = None
-    model.config.suppress_tokens = []
-    model.config.use_cache = False
-
-    output_dir="./model_out_largev2_config2"
+    output_dir="./model_out_largev2_further"
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=60,
         gradient_accumulation_steps=1,  # increase by 2x for every 2x decrease in batch size
-        learning_rate=1e-3,
-        warmup_steps=500,
-        max_steps=12000,
+        learning_rate=5e-4,
+        warmup_steps=0,
+        max_steps=20000,
         gradient_checkpointing=True,
-        num_train_epochs=5,
+        num_train_epochs=8,
         fp16=True,
         evaluation_strategy="steps",
         per_device_eval_batch_size=8,
@@ -235,7 +225,6 @@ if __name__ == "__main__":
         train_dataset=ds_train_vect,
         eval_dataset=ds_test_vect,
         data_collator=data_collator,
-        # compute_metrics=compute_metrics,
         tokenizer=processor,
         callbacks=[ShuffleCallback(), PeftSavingCallback],
     )
