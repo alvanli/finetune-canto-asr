@@ -1,0 +1,15 @@
+python3 run_pseudo_labelling.py \
+    --model_name_or_path "simonl0909/whisper-large-v2-cantonese" \
+    --audio_column_name "" \
+    --text_column_name "" \
+    --language "yue" \
+    --dataloader_num_workers 16 \
+    --preprocessing_num_workers 16 \
+    --logging_steps 200 \
+    --max_label_length 128 \
+    --decode_token_ids False \
+    --output_dir "./output" \
+    --per_device_eval_batch_size 64 \
+    --dtype "bfloat16" \
+    --dataloader_num_workers 16 \
+    --preprocessing_num_workers 16 
