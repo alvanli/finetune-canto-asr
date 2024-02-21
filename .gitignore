@@ -3,7 +3,7 @@ model_out*/*
 *.json
 *.bin
 events*
-
+*.safetensors
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
