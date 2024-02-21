@@ -20,20 +20,21 @@ import evaluate
 
 metric = evaluate.load("cer")
 
-# canto_tok = AutoTokenizer.from_pretrained("./tokenizer/tokenizer-canto")
-
 do_lower_case = False
 do_remove_punctuation = False
 
 normalizer = BasicTextNormalizer()
 max_input_length = 30.0
+max_label_length = 448
 
 def is_audio_in_length_range(length):
     return length < max_input_length
 
-# evaluate with the 'normalised' WER
-do_normalize_eval = True
+def is_label_in_length_range(labels):
+    return len(labels) < max_label_length
 
+def is_audio_right_size(input_features):
+    return len(input_features)==80 and len(input_features[0])==3000
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -62,40 +63,6 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         return batch
 
-
-def load_streaming_dataset(dataset_name, dataset_config_name, split, **kwargs):
-    if "+" in split:
-        # load multiple splits separated by the `+` symbol *with* streaming mode
-        dataset_splits = [load_dataset(dataset_name, dataset_config_name, split=split_name, streaming=True, **kwargs) for split_name in split.split("+")]
-        # interleave multiple splits to form one dataset
-        interleaved_dataset = interleave_datasets(dataset_splits)
-        return interleaved_dataset
-    else:
-        # load a single split *with* streaming mode
-        dataset = load_dataset(dataset_name, dataset_config_name, split=split, streaming=True, **kwargs)
-        return dataset
-
-
-def prepare_dataset(batch):
-    # load and (possibly) resample audio data to 16kHz
-    audio = batch["audio"]
-
-    # compute log-Mel input features from input audio array 
-    batch["input_features"] = processor.feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
-    # compute input length of audio sample in seconds
-    batch["input_length"] = len(audio["array"]) / audio["sampling_rate"]
-    
-    # optional pre-processing steps
-    transcription = batch["sentence"]
-    if do_lower_case:
-        transcription = transcription.lower()
-    if do_remove_punctuation:
-        transcription = normalizer(transcription).strip()
-    
-    # encode target text to label ids
-    batch["labels"] = processor.tokenizer(transcription).input_ids
-    return batch
-
 class ShuffleCallback(TrainerCallback):
     def on_epoch_begin(self, args, state, control, train_dataloader, **kwargs):
         if isinstance(train_dataloader.dataset, IterableDatasetShard):
@@ -104,35 +71,38 @@ class ShuffleCallback(TrainerCallback):
             train_dataloader.dataset.set_epoch(train_dataloader.dataset._epoch + 1)
 
 
+SAVE_DIR = "/exp/whisper_yue/whisper_data"
+PRETRAINED_MODEL = "alvanlii/whisper-small-cantonese"
 if __name__ == "__main__":
+    processor = WhisperProcessor.from_pretrained(PRETRAINED_MODEL, task="transcribe")
+    data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
+    model = WhisperForConditionalGeneration.from_pretrained(PRETRAINED_MODEL)
 
-    saved_ds_dir = "/data2/processed_canto"
-    processed_dir = saved_ds_dir+"/aug_combined_train_filtered"
-    processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
-    
-    if not os.path.exists(processed_dir):
-        ds_train_vect = load_from_disk("/data2/aug_combined_canto")
-        ds_test_vect = load_from_disk("/data2/processed_common_11_hk/test")
+    print("Loaded model")
 
-        ds_train_vect = ds_train_vect.shuffle(
-            seed=0
-        )
-        print(f"Before filtering {len(ds_train_vect)}")
-        ds_train_vect = ds_train_vect.filter(
-            is_audio_in_length_range,
-            input_columns=["input_length"],
-        )
-        print(f"After filtering {len(ds_train_vect)}")
-        ds_train_vect.save_to_disk(processed_dir)
-    else:
-        ds_train_vect = load_from_disk(processed_dir)
-        ds_test_vect = load_from_disk("/data2/processed_common_11_hk/test")
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+    model.config.use_cache = False
+
+    ds_train_vect = load_from_disk(f"{SAVE_DIR}/combined_canto_train_filtered")
+    ds_test_vect = load_from_disk(f"{SAVE_DIR}/cv_test")
+
+    print(len(ds_train_vect))
+    # ds_train_vect = ds_train_vect.filter(
+    #     is_audio_in_length_range,
+    #     input_columns=["input_length"],
+    # )
+    ds_train_vect = ds_train_vect.filter(
+        is_label_in_length_range,
+        input_columns=["labels"],
+    )
+    # ds_train_vect = ds_train_vect.filter(
+    #     is_audio_right_size,
+    #     input_columns=["input_features"],
+    # )
+    print(len(ds_train_vect))
 
     print("Loaded datasets")
-
-    WHISPER_MODEL = "openai/whisper-small"
-    processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, task="transcribe")
-    data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
 
     def compute_metrics(pred):
@@ -145,29 +115,17 @@ if __name__ == "__main__":
         # we do not want to group tokens when computing the metrics
         pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
         label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-        if do_normalize_eval:
-            pred_str = [normalizer(pred) for pred in pred_str]
-            label_str = [normalizer(label) for label in label_str]
 
         cer = 100 * metric.compute(predictions=pred_str, references=label_str)
 
         return {"cer": cer}
 
-
-    model = WhisperForConditionalGeneration.from_pretrained("./model_out_trpro_more/checkpoint-5000")
-
-    print("Loaded model")
-
-    model.config.forced_decoder_ids = None
-    model.config.suppress_tokens = []
-    model.config.use_cache = False
-
-    output_dir="./model_out_trpro_more_more"
+    output_dir="./model_out"
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=25,
-        gradient_accumulation_steps=2,  # increase by 2x for every 2x decrease in batch size
+        gradient_accumulation_steps=4,  # increase by 2x for every 2x decrease in batch size
         learning_rate=5e-5,
         warmup_steps=500,
         max_steps=15000,

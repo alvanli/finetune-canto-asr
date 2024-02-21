@@ -1,95 +1,21 @@
-import numpy
-import shutil
 import glob, os, re, json
 from tqdm import tqdm
-from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets
+from multiprocessing import Process
+from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets, Audio
 from transformers import WhisperProcessor
 
 from bs4 import BeautifulSoup as bs
 import librosa  
 import soundfile as sf
-# from scipy.io.wavfile import read as wavread
 
-BASE_DIR = "/exp/whisper_yue"
+BASE_DIR = "/exp/whisper_yue/"
+SAVE_DIR = "/exp/whisper_yue/whisper_data"
 
-def process_annot(words):
-    # words = re.sub(r'(&amp;)', '', words)
-    words = words.replace("#",'')
-    words = words.replace("&",'')
-    words = re.sub(r'[a-z]{1,5}[0-9]','', words)
-    words = words.replace("xxx", "")
-    return words
+SAMPLING_RATE = 16_000
+SPLIT_LENGTH = 2000
+processor = WhisperProcessor.from_pretrained("alvanlii/whisper-small-cantonese", task="transcribe")
 
-def process_canto_map():
-    all_audio_files = glob.glob(BASE_DIR+"/CantoMap/ConversationData/*/*.wav")
-    output_dir = BASE_DIR + "/CantoMap/processed"
-
-    annot_map = dict()
-    for audio_file in tqdm(all_audio_files):
-        annot_file = audio_file.replace(".wav", ".eaf")
-        file_name = os.path.basename(audio_file).split(".")[0]
-        if os.path.exists(annot_file):
-            with open(annot_file, "r") as f:
-                annot_content = f.read()
-            arr, rate = librosa.load(audio_file, sr=16000)
-
-            soup = bs(annot_content, "xml")
-            time_slots = soup.find_all("TIME_SLOT")
-            slot_maps = dict({time_slot["TIME_SLOT_ID"]: int(time_slot["TIME_VALUE"]) for time_slot in time_slots})
-
-            annots = soup.find_all("ALIGNABLE_ANNOTATION")
-            for annot in annots:
-                annot_text = annot.find_all("ANNOTATION_VALUE")[0].text
-                processed_annot = process_annot(annot_text)
-                if process_annot:
-                    aid = annot["ANNOTATION_ID"]
-                    ref1 = slot_maps[annot["TIME_SLOT_REF1"]]
-                    ref2 = slot_maps[annot["TIME_SLOT_REF2"]]
-                    start_idx = int(rate * ref1 / 1000)
-                    stop_idx = int(rate * ref2 / 1000)
-                    sf.write(output_dir + f"/{file_name}_{aid}.wav", arr[start_idx:stop_idx], rate)
-                    annot_map[f"{file_name}_{aid}"] = processed_annot
-    with open(output_dir+"/annots.json", "w", encoding="utf-8") as f:
-        json.dump(annot_map, f, ensure_ascii=False)
-
-    return
-
-
-def process_canto_map_2():
-    all_audio_files = glob.glob(BASE_DIR+"/CantoMap/ConversationData/*/*.wav")
-    output_dir = BASE_DIR + "/CantoMap/hf_ds/"
-
-    with open(BASE_DIR+"/CantoMap/hf_ds/metadata.csv", "a") as meta_f:
-        meta_f.write("file_name,transcription\n")
-
-    annot_map = dict()
-    for audio_file in tqdm(all_audio_files):
-        annot_file = audio_file.replace(".wav", ".eaf")
-        file_name = os.path.basename(audio_file).split(".")[0]
-        if os.path.exists(annot_file):
-            with open(annot_file, "r") as f:
-                annot_content = f.read()
-            arr, rate = librosa.load(audio_file, sr=16000)
-
-            soup = bs(annot_content, "xml")
-            time_slots = soup.find_all("TIME_SLOT")
-            slot_maps = dict({time_slot["TIME_SLOT_ID"]: int(time_slot["TIME_VALUE"]) for time_slot in time_slots})
-
-            annots = soup.find_all("ALIGNABLE_ANNOTATION")
-            for annot in annots:
-                annot_text = annot.find_all("ANNOTATION_VALUE")[0].text
-                processed_annot = process_annot(annot_text)
-                if len(processed_annot.strip())>1:
-                    aid = annot["ANNOTATION_ID"]
-                    ref1 = slot_maps[annot["TIME_SLOT_REF1"]]
-                    ref2 = slot_maps[annot["TIME_SLOT_REF2"]]
-                    start_idx = int(rate * ref1 / 1000)
-                    stop_idx = int(rate * ref2 / 1000)
-                    sf.write(output_dir + f"data/{file_name}_{aid}.wav", arr[start_idx:stop_idx], rate)
-                    with open(BASE_DIR+"/CantoMap/hf_ds/metadata.csv", "a") as meta_f:
-                        meta_f.write(f"data/{file_name}_{aid}.wav,{processed_annot}\n")
-
-def load_canto_map(processor):
+def load_canto_map():
     input_dir = BASE_DIR + "/CantoMap/processed"
     with open(input_dir+"/annots.json", "r", encoding="utf-8") as f:
         lines = f.read()
@@ -99,20 +25,47 @@ def load_canto_map(processor):
         "input_length": [],
         "labels": []
     }
-    for key in tqdm(line_dict.keys()):
+    count_idx = 1
+    length_total_seconds = 0
+
+    for idx, key in enumerate(list(line_dict.keys())):
         curr_val = line_dict[key]
-        if len(curr_val.strip()) > 1:
-            arr, rate = librosa.load(input_dir + f"/{key}.wav", sr=16000)
-            info_dict["input_features"].append(processor.feature_extractor(arr, sampling_rate=rate).input_features[0]),
-            info_dict["input_length"].append( len(arr) / rate)
-            info_dict["labels"].append(processor.tokenizer(curr_val).input_ids)
+        if len(curr_val.strip()) > 3:
+            arr, rate = librosa.load(f"{input_dir}/{key}.wav", sr=SAMPLING_RATE)
+            length_seconds = librosa.get_duration(y=arr, sr=rate)
+            try:
+                feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
+                clean_sentence = curr_val
+                input_ids = processor(text=clean_sentence).input_ids
 
+                info_dict["input_features"].append(feature),
+                info_dict["input_length"].append(len(arr) / rate)
+                info_dict["labels"].append(input_ids)
+                length_total_seconds += length_seconds
+            except ValueError:
+                print("Bad error")
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
+            ds = Dataset.from_dict(mapping=info_dict)
+            ds.save_to_disk(f"{SAVE_DIR}/canto_map_{count_idx}")
+            count_idx += 1
+            info_dict = {
+                "input_features": [],
+                "input_length": [],
+                "labels": []
+            }   
     ds = Dataset.from_dict(mapping=info_dict)
-    ds.save_to_disk("/exp/hf_ds/canto_map")
+    ds.save_to_disk(f"{SAVE_DIR}/canto_map_end")
 
-def load_canto_asr(processor):
-    audio_base_path = BASE_DIR + "/cantonese-asr/dataset/zippy/audio"
-    transcript_base_path = BASE_DIR + "/cantonese-asr/dataset/zippy/transcription"
+    print("="*10)
+    print(f"Finished loading CantoMap dataset")
+    print(f"Length: {length_total_seconds} seconds")
+    print("="*10)
+    return
+
+
+def load_canto_asr():
+    audio_base_path = BASE_DIR + "/cantonese-asr/dataset/data/audio"
+    transcript_base_path = BASE_DIR + "/cantonese-asr/dataset/data/transcription"
     all_audio_files = glob.glob(audio_base_path+"/*.wav")
     
     info_dict = {
@@ -120,79 +73,148 @@ def load_canto_asr(processor):
         "input_length": [],
         "labels": []
     }
-    for audio_file in tqdm(all_audio_files):
+    count_idx = 1
+    length_total_seconds = 0
+    for idx, audio_file in enumerate(all_audio_files):  
         transcript_file = audio_file.replace("audio", "transcription").replace(".wav", ".txt")
         with open(transcript_file, "r", encoding="utf-8") as f:
             content = f.read()
-        arr, rate = librosa.load(audio_file, sr=16000)
+        arr, rate = librosa.load(audio_file, sr=SAMPLING_RATE)
+        length_seconds = librosa.get_duration(y=arr, sr=rate)
         input_length = len(arr) / rate
-        if input_length < 35 and len(content.strip()) > 1:
-            info_dict["input_features"].append(processor.feature_extractor(arr, sampling_rate=rate).input_features[0]),
+        if len(content.strip()) > 3:
+            feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
+            clean_sentence = content
+            input_ids = processor(text=clean_sentence).input_ids
+
+            info_dict["input_features"].append(feature)
             info_dict["input_length"].append(input_length)
-            info_dict["labels"].append(processor.tokenizer(content).input_ids)
+            info_dict["labels"].append(input_ids)
+            length_total_seconds += length_seconds
+
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
+            ds = Dataset.from_dict(mapping=info_dict)
+            ds.save_to_disk(f"{SAVE_DIR}/canto_asr_{count_idx}")
+            count_idx += 1
+            info_dict = {
+                "input_features": [],
+                "input_length": [],
+                "labels": []
+            }    
 
     ds = Dataset.from_dict(mapping=info_dict)
-    ds.save_to_disk("/exp/hf_ds/canto_asr")
+    ds.save_to_disk(f"{SAVE_DIR}/canto_asr_end")
+
+    print("="*10)
+    print(f"Finished loading Cantonse ASR")
+    print(f"Length: {length_total_seconds} seconds")
+    print("="*10)
     return
 
-def load_canto_asr_2():
-    audio_base_path = BASE_DIR + "/cantonese-asr/dataset/zippy/audio"
-    transcript_base_path = BASE_DIR + "/cantonese-asr/dataset/zippy/transcription"
-    all_audio_files = glob.glob(audio_base_path+"/*.wav")
-    output_base_path = BASE_DIR + "/cantonese-asr/processed"
 
-    with open(output_base_path + "/metadata.csv", "w") as meta_f:
-        meta_f.write("file_name,transcription\n")
+def merge_everything():
+    ds_canto_asr = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_asr*")]
+    ds_canto_map = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_map*")]
+    ds_canto_pseudo = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_pseudo*")]
+    ds_train_vect = load_from_disk(f"{SAVE_DIR}/cv_train")
+    ds_train_vect_2 = load_from_disk(f"{SAVE_DIR}/cv_train_2")
+    big_audio_ds = concatenate_datasets(ds_canto_asr + ds_canto_map + ds_canto_pseudo + [ds_train_vect, ds_train_vect_2])
+    big_audio_ds.save_to_disk(f"{SAVE_DIR}/combined_canto_train")
 
-    for audio_file in tqdm(all_audio_files):
-        transcript_file = audio_file.replace("audio", "transcription").replace(".wav", ".txt")
+
+def load_cv():
+    def prepare_dataset(batch):
+        audio = batch["audio"]
+        batch["input_features"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
+        batch["input_length"] = len(audio["array"]) / audio["sampling_rate"]
+        batch["labels"] = processor(text=batch["sentence"]).input_ids
+        return batch
+
+    ds_train = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="train", use_auth_token=True)  
+    ds_train_2 = load_dataset("mozilla-foundation/common_voice_16_0", "zh-HK", split="train", use_auth_token=True)  
+    ds_test = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)
+
+    ds_train = ds_train.cast_column("audio", Audio(sampling_rate=16_000))
+    ds_train_2 = ds_train_2.cast_column("audio", Audio(sampling_rate=16_000))
+    ds_test = ds_test.cast_column("audio", Audio(sampling_rate=16_000))
+
+    ds_train = ds_train.map(prepare_dataset, remove_columns=ds_train.column_names)
+    ds_train_2 = ds_train_2.map(prepare_dataset, remove_columns=ds_train_2.column_names)
+    ds_test = ds_test.map(prepare_dataset, remove_columns=ds_test.column_names)
+
+    ds_train.save_to_disk(f"{SAVE_DIR}/cv_train")
+    ds_train_2.save_to_disk(f"{SAVE_DIR}/cv_train_2")
+    ds_test.save_to_disk(f"{SAVE_DIR}/cv_test")
+    return
+
+
+def load_pseudo_ds():
+    all_audio_files = sorted(glob.glob(f"{BASE_DIR}/all_data/pseudo_data/audio/*.mp3") + glob.glob(f"{BASE_DIR}/all_data/podcast/audio/*.flac"))
+    info_dict = {
+        "input_features": [],
+        "input_length": [],
+        "labels": []
+    }
+    count_idx = 1
+    length_total_seconds = 0
+    for idx, audio_file in enumerate(all_audio_files):  
+        transcript_file = audio_file.replace("audio", "text").replace(".mp3", ".txt").replace(".flac", ".txt")
+
+        if not os.path.isfile(transcript_file):
+            continue
+
         with open(transcript_file, "r", encoding="utf-8") as f:
-            content = f.read()
-        file_name = os.path.basename(audio_file).split(".")[0]
-        shutil.copyfile(audio_file, f"{output_base_path}/data/{file_name}.wav")
-        with open(output_base_path + "/metadata.csv", "a") as meta_f:
-            meta_f.write(f"data/{file_name}.wav,{content}\n")
+            transcript = f.read()
+        arr, rate = librosa.load(audio_file, sr=SAMPLING_RATE)
+        length_seconds = librosa.get_duration(y=arr, sr=rate)
+        input_length = len(arr) / rate
+        if len(transcript.strip()) > 5:
+            feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
+            clean_sentence = transcript
+            input_ids = processor(text=clean_sentence).input_ids
 
-def prepare_dataset(batch):
-    processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
-    # load and (possibly) resample audio data to 16kHz
-    audio = batch["audio"]
+            info_dict["input_features"].append(feature)
+            info_dict["input_length"].append(input_length)
+            info_dict["labels"].append(input_ids)
+            length_total_seconds += length_seconds
 
-    # compute log-Mel input features from input audio array 
-    batch["input_features"] = processor.feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
-    # compute input length of audio sample in seconds
-    batch["input_length"] = len(audio["array"]) / audio["sampling_rate"]
-    
-    # optional pre-processing steps
-    transcription = batch["transcription"]
-    
-    # encode target text to label ids
-    batch["labels"] = processor.tokenizer(transcription).input_ids
-    return batch
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
+            ds = Dataset.from_dict(mapping=info_dict)
+            ds.save_to_disk(f"{SAVE_DIR}/canto_pseudo_{count_idx}")
+            count_idx += 1
+            info_dict = {
+                "input_features": [],
+                "input_length": [],
+                "labels": []
+            }    
 
+    ds = Dataset.from_dict(mapping=info_dict)
+    ds.save_to_disk(f"{SAVE_DIR}/canto_pseudo_end")
 
-def merge_map_asr():
-    ds_canto_asr = load_dataset("audiofolder", data_dir="/exp/hf_ds/canto_asr")
-    ds_canto_map = load_dataset("audiofolder", data_dir="/exp/hf_ds/canto_map")
-    ds_train_vect = load_from_disk("/exp/hf_ds/processed_common_11_hk/train")
-    # print(ds_canto_asr)
-    # print(ds_canto_map)
-    print(type(ds_train_vect))
-    two_audio_ds = concatenate_datasets([ds_canto_asr["train"], ds_canto_asr['train']]).map(prepare_dataset).with_format("torch")
-    big_audio_ds = concatenate_datasets([ds_train_vect, two_audio_ds])
-    big_audio_ds.save_to_disk("/exp/hf_ds/combined_canto")
-
-
-def load_cancor():
+    print("="*10)
+    print(f"Finished loading pseudo dataset")
+    print(f"Length: {length_total_seconds} seconds")
+    print("="*10)
     return
 
-def load_mdcc():
-    return
+def load_others():
+    load_cv()
+    load_canto_asr()
+    load_canto_map()
 
 if __name__ == "__main__":
-    # merge_map_asr()
-    # process_canto_map_2()
-    load_canto_asr_2()
-    # processor = WhisperProcessor.from_pretrained("openai/whisper-small", task="transcribe")
-    # load_canto_asr(processor)
-    # load_canto_map(processor)
+    p1 = Process(target=load_others)
+    p1.start()
+
+    p2 = Process(target=load_pseudo_ds)
+    p2.start()
+
+    # load_cv()
+    # load_canto_asr()
+    # load_canto_map()
+    # load_pseudo_ds()
+
+
+    p1.join()
+    p2.join()
+    merge_everything()

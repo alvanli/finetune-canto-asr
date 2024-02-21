@@ -1,5 +1,5 @@
 *.txt
-model_out_*/*
+model_out*/*
 *.json
 *.bin
 events*
