@@ -19,7 +19,7 @@ from peft import prepare_model_for_int8_training
 
 import evaluate
 
-from augment.pt_augs import do_time_stretch, do_freq_masking, do_time_masking
+# from augment.pt_augs import do_time_stretch, do_freq_masking, do_time_masking
 
 WHISPER_MODEL = "openai/whisper-large-v3"
 LANGUAGE = "yue"
@@ -31,33 +31,13 @@ do_lower_case = False
 do_remove_punctuation = False
 
 max_input_length = 30.0
+max_label_length = 448
 
 def is_audio_in_length_range(length):
     return length < max_input_length
 
-# evaluate with the 'normalised' WER
-do_normalize_eval = True
-
-
-def process_function(datum):
-    if np.random.random() > 0.3:
-        return datum
-
-    aug_feat = torch.tensor(datum)
-    aug_feat = torch.unsqueeze(aug_feat, 2)
-    
-    chances = np.random.random()
-    if chances < 0.3:
-        aug_feat = do_time_masking(aug_feat)
-    if chances > 0.7:
-        aug_feat = do_time_stretch(aug_feat)
-    if 0.3 < chances < 0.7:
-        aug_feat = do_freq_masking(aug_feat)
-
-    aug_feat = aug_feat.squeeze()
-    aug_feat = aug_feat.tolist()
-    return aug_feat
-
+def is_label_in_length_range(labels):
+    return len(labels) < max_label_length
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -114,7 +94,7 @@ class PeftSavingCallback(TrainerCallback):
 
 if __name__ == "__main__":
     processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, language=LANGUAGE, task=TASK)  
-    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=True)
+    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=False)
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
     print("Loaded PEFT LORA Model")
@@ -129,19 +109,23 @@ if __name__ == "__main__":
 
     from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model
 
-    config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
+    config = LoraConfig(use_dora=True, r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
     model = get_peft_model(model, config)
     model.print_trainable_parameters()
     model.config.use_cache = False
 
-    ds_train_vect = load_from_disk("/exp/whisper_yue/whisper_data/combined_canto_train")
+    ds_train_vect = load_from_disk("/exp/whisper_yue/whisper_large_data/combined_canto_train")
     print(f"Train Len: {ds_train_vect}")
     ds_train_vect = ds_train_vect.filter(
         is_audio_in_length_range,
         input_columns=["input_length"]
     )
+    ds_train_vect = ds_train_vect.filter(
+        is_label_in_length_range,
+        input_columns=["labels"],
+    )
     print(f"Train Len: {ds_train_vect}")
-    ds_test_vect = load_from_disk("/exp/whisper_yue/whisper_data/cv_test")
+    ds_test_vect = load_from_disk("/exp/whisper_yue/whisper_large_data/cv_test")
     print("Loaded datasets")
 
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
@@ -169,12 +153,12 @@ if __name__ == "__main__":
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=32,
-        gradient_accumulation_steps=4,  # increase by 2x for every 2x decrease in batch size
-        learning_rate=1e-4,
-        warmup_steps=1000,
+        per_device_train_batch_size=18,
+        gradient_accumulation_steps=5,  # increase by 2x for every 2x decrease in batch size
+        learning_rate=2e-5,
+        warmup_steps=700,
         gradient_checkpointing=True,
-        num_train_epochs=10,
+        num_train_epochs=5,
         fp16=True,
         evaluation_strategy="steps",
         per_device_eval_batch_size=8,
@@ -203,11 +187,8 @@ if __name__ == "__main__":
         callbacks=[ShuffleCallback(), PeftSavingCallback],
     )
 
-
     model.save_pretrained(output_dir)
     processor.save_pretrained(output_dir)
 
     trainer.train()
-
-    trainer.save_model(f"{output_dir}/model")
   
