@@ -21,8 +21,8 @@ import evaluate
 
 # from augment.pt_augs import do_time_stretch, do_freq_masking, do_time_masking
 
-WHISPER_MODEL = "openai/whisper-large-v3"
-LANGUAGE = "yue"
+WHISPER_MODEL = "openai/whisper-large-v2"
+LANGUAGE = "zh"
 TASK = "transcribe"
 
 metric = evaluate.load("cer")

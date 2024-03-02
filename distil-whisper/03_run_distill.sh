@@ -1,10 +1,10 @@
 python3 run_distillation.py \
   --model_name_or_path "./distil-small-init" \
-  --teacher_model_name_or_path "alvanlii/whisper-small-cantonese" \
+  --teacher_model_name_or_path "/exp/whisper_yue/finetune-whisper-canto/whisper_small/model_out/checkpoint-15000" \
   --eval_steps 500 \
   --save_steps 500 \
-  --warmup_steps 2000 \
-  --learning_rate 0.00005 \
+  --warmup_steps 3000 \
+  --learning_rate 0.000001 \
   --lr_scheduler_type "constant_with_warmup" \
   --logging_steps 50 \
   --save_total_limit 3 \

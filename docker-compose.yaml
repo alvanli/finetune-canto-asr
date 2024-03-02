@@ -18,4 +18,4 @@ services:
             capabilities: [gpu]
     tty: true 
     volumes:
-      - /home/ch35li/ehr/embeddings_exp:/exp
+      - /home/dsc-admin/Documents/asr/:/exp

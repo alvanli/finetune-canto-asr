@@ -4,6 +4,9 @@ model_out*/*
 *.bin
 events*
 *.safetensors
+*.pkl
+*.pth
+*.pt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

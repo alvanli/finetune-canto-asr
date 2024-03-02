@@ -149,7 +149,7 @@ def load_cv():
 
 
 def load_pseudo_ds():
-    all_audio_files = sorted(glob.glob(f"{BASE_DIR}/all_data/pseudo_data/audio/*.mp3") + glob.glob(f"{BASE_DIR}/all_data/podcast/audio/*.flac"))
+    all_audio_files = sorted(glob.glob(f"{BASE_DIR}/canto-youtube-dl/audio/*.mp3") + glob.glob(f"{BASE_DIR}/sbs_cantonese/audio/*.flac"))
     info_dict = {
         "input_features": [],
         "input_length": [],
@@ -158,7 +158,7 @@ def load_pseudo_ds():
     count_idx = 1
     length_total_seconds = 0
     for idx, audio_file in enumerate(all_audio_files):  
-        transcript_file = audio_file.replace("audio", "text").replace(".mp3", ".txt").replace(".flac", ".txt")
+        transcript_file = audio_file.replace("audio", "clean").replace(".mp3", ".txt").replace(".flac", ".txt")
 
         if not os.path.isfile(transcript_file):
             continue

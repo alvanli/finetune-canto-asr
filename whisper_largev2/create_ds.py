@@ -1,7 +1,8 @@
 import glob, os, re, json
 from tqdm import tqdm
+from multiprocessing import Process
 from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets, Audio
-from transformers import WhisperProcessor, WhisperTokenizerFast
+from transformers import WhisperProcessor
 
 from bs4 import BeautifulSoup as bs
 import librosa  
@@ -9,10 +10,12 @@ import soundfile as sf
 
 BASE_DIR = "/exp/whisper_yue/"
 SAVE_DIR = "/exp/whisper_yue/whisper_data"
+
 SAMPLING_RATE = 16_000
+SPLIT_LENGTH = 4000
+processor = WhisperProcessor.from_pretrained("openai/whisper-large-v2", task="transcribe")
 
-
-def load_canto_map(processor, tokenizer):
+def load_canto_map():
     input_dir = BASE_DIR + "/CantoMap/processed"
     with open(input_dir+"/annots.json", "r", encoding="utf-8") as f:
         lines = f.read()
@@ -23,22 +26,25 @@ def load_canto_map(processor, tokenizer):
         "labels": []
     }
     count_idx = 1
-    for idx, key in enumerate(tqdm(list(line_dict.keys())[:])):
+    length_total_seconds = 0
+
+    for idx, key in enumerate(list(line_dict.keys())):
         curr_val = line_dict[key]
-        if len(curr_val.strip()) > 1:
+        if len(curr_val.strip()) > 3:
             arr, rate = librosa.load(f"{input_dir}/{key}.wav", sr=SAMPLING_RATE)
+            length_seconds = librosa.get_duration(y=arr, sr=rate)
             try:
                 feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
                 clean_sentence = curr_val
-                file_tokens = tokenizer(key, add_special_tokens=False).input_ids
                 input_ids = processor(text=clean_sentence).input_ids
 
                 info_dict["input_features"].append(feature),
                 info_dict["input_length"].append(len(arr) / rate)
                 info_dict["labels"].append(input_ids)
+                length_total_seconds += length_seconds
             except ValueError:
                 print("Bad error")
-        if idx % 5000 == 0 and idx != 0:
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
             ds = Dataset.from_dict(mapping=info_dict)
             ds.save_to_disk(f"{SAVE_DIR}/canto_map_{count_idx}")
             count_idx += 1
@@ -49,10 +55,15 @@ def load_canto_map(processor, tokenizer):
             }   
     ds = Dataset.from_dict(mapping=info_dict)
     ds.save_to_disk(f"{SAVE_DIR}/canto_map_end")
+
+    print("="*10)
+    print(f"Finished loading CantoMap dataset")
+    print(f"Length: {length_total_seconds} seconds")
+    print("="*10)
     return
 
 
-def load_canto_asr(processor, tokenizer):
+def load_canto_asr():
     audio_base_path = BASE_DIR + "/cantonese-asr/dataset/data/audio"
     transcript_base_path = BASE_DIR + "/cantonese-asr/dataset/data/transcription"
     all_audio_files = glob.glob(audio_base_path+"/*.wav")
@@ -63,23 +74,25 @@ def load_canto_asr(processor, tokenizer):
         "labels": []
     }
     count_idx = 1
-    for idx, audio_file in enumerate(tqdm(all_audio_files)):  
+    length_total_seconds = 0
+    for idx, audio_file in enumerate(all_audio_files):  
         transcript_file = audio_file.replace("audio", "transcription").replace(".wav", ".txt")
         with open(transcript_file, "r", encoding="utf-8") as f:
             content = f.read()
         arr, rate = librosa.load(audio_file, sr=SAMPLING_RATE)
+        length_seconds = librosa.get_duration(y=arr, sr=rate)
         input_length = len(arr) / rate
-        if len(content.strip()) > 1:
+        if len(content.strip()) > 3:
             feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
-            file_tokens = tokenizer(os.path.basename(audio_file), add_special_tokens=False).input_ids
             clean_sentence = content
             input_ids = processor(text=clean_sentence).input_ids
 
             info_dict["input_features"].append(feature)
             info_dict["input_length"].append(input_length)
             info_dict["labels"].append(input_ids)
+            length_total_seconds += length_seconds
 
-        if idx % 5000 == 0 and idx != 0:
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
             ds = Dataset.from_dict(mapping=info_dict)
             ds.save_to_disk(f"{SAVE_DIR}/canto_asr_{count_idx}")
             count_idx += 1
@@ -91,19 +104,25 @@ def load_canto_asr(processor, tokenizer):
 
     ds = Dataset.from_dict(mapping=info_dict)
     ds.save_to_disk(f"{SAVE_DIR}/canto_asr_end")
+
+    print("="*10)
+    print(f"Finished loading Cantonse ASR")
+    print(f"Length: {length_total_seconds} seconds")
+    print("="*10)
     return
 
 
-def merge_map_asr():
-    ds_canto_asr = [load_from_disk(f"/exp/whisper_yue/whisper_data/canto_asr_{idx}") for idx in range(1,18)]
-    ds_canto_map = [load_from_disk(f"/exp/whisper_yue/whisper_data/canto_map_{idx}") for idx in range(1,9)]
-    ds_train_vect = load_from_disk("/exp/whisper_yue/whisper_data/cv_train")
-    ds_train_vect_2 = load_from_disk("/exp/whisper_yue/whisper_data/cv_train_2")
-    big_audio_ds = concatenate_datasets(ds_canto_asr + ds_canto_map + [ds_train_vect, ds_train_vect_2])
+def merge_everything():
+    ds_canto_asr = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_asr*")]
+    ds_canto_map = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_map*")]
+    ds_canto_pseudo = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_pseudo*")]
+    ds_train_vect = load_from_disk(f"{SAVE_DIR}/cv_train")
+    ds_train_vect_2 = load_from_disk(f"{SAVE_DIR}/cv_train_2")
+    big_audio_ds = concatenate_datasets(ds_canto_asr + ds_canto_map + ds_canto_pseudo + [ds_train_vect, ds_train_vect_2])
     big_audio_ds.save_to_disk(f"{SAVE_DIR}/combined_canto_train")
 
 
-def load_cv(processor, tokenizer):
+def load_cv():
     def prepare_dataset(batch):
         audio = batch["audio"]
         batch["input_features"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
@@ -129,13 +148,73 @@ def load_cv(processor, tokenizer):
     return
 
 
-if __name__ == "__main__":
-    model_path = "openai/whisper-large-v3"
-    processor = WhisperProcessor.from_pretrained(model_path, task="transcribe", language="yue")
-    tokenizer = WhisperTokenizerFast.from_pretrained(model_path)
-    
-    # load_cv(processor, tokenizer)
-    # load_canto_asr(processor, tokenizer)
-    # load_canto_map(processor, tokenizer)
+def load_pseudo_ds():
+    all_audio_files = sorted(glob.glob(f"{BASE_DIR}/canto-youtube-dl/audio/*.mp3") + glob.glob(f"{BASE_DIR}/sbs_cantonese/audio/*.flac"))
+    info_dict = {
+        "input_features": [],
+        "input_length": [],
+        "labels": []
+    }
+    count_idx = 1
+    length_total_seconds = 0
+    for idx, audio_file in enumerate(all_audio_files):  
+        transcript_file = audio_file.replace("audio", "clean").replace(".mp3", ".txt").replace(".flac", ".txt")
 
-    merge_map_asr()
+        if not os.path.isfile(transcript_file):
+            continue
+
+        with open(transcript_file, "r", encoding="utf-8") as f:
+            transcript = f.read()
+        arr, rate = librosa.load(audio_file, sr=SAMPLING_RATE)
+        length_seconds = librosa.get_duration(y=arr, sr=rate)
+        input_length = len(arr) / rate
+        if len(transcript.strip()) > 5:
+            feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
+            clean_sentence = transcript
+            input_ids = processor(text=clean_sentence).input_ids
+
+            info_dict["input_features"].append(feature)
+            info_dict["input_length"].append(input_length)
+            info_dict["labels"].append(input_ids)
+            length_total_seconds += length_seconds
+
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
+            ds = Dataset.from_dict(mapping=info_dict)
+            ds.save_to_disk(f"{SAVE_DIR}/canto_pseudo_{count_idx}")
+            count_idx += 1
+            info_dict = {
+                "input_features": [],
+                "input_length": [],
+                "labels": []
+            }    
+
+    ds = Dataset.from_dict(mapping=info_dict)
+    ds.save_to_disk(f"{SAVE_DIR}/canto_pseudo_end")
+
+    print("="*10)
+    print(f"Finished loading pseudo dataset")
+    print(f"Length: {length_total_seconds} seconds")
+    print("="*10)
+    return
+
+def load_others():
+    load_cv()
+    load_canto_asr()
+    load_canto_map()
+
+if __name__ == "__main__":
+    p1 = Process(target=load_others)
+    p1.start()
+
+    p2 = Process(target=load_pseudo_ds)
+    p2.start()
+
+    # load_cv()
+    # load_canto_asr()
+    # load_canto_map()
+    # load_pseudo_ds()
+
+
+    p1.join()
+    p2.join()
+    merge_everything()
