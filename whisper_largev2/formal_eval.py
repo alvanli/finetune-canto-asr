@@ -25,18 +25,20 @@ if __name__ == "__main__":
     dataset = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16_000))
 
-    BASE_WHISPER_MODEL = "openai/whisper-large-v2   "
+    BASE_WHISPER_MODEL = "openai/whisper-large-v2"
     LANGUAGE = "yue"
     TASK = "transcribe"
 
-    model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-3500"
+    model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-500"
 
     processor = WhisperProcessor.from_pretrained(BASE_WHISPER_MODEL, language=LANGUAGE, task=TASK)  
-    model = WhisperForConditionalGeneration.from_pretrained(BASE_WHISPER_MODEL, load_in_8bit=False)
+    model = WhisperForConditionalGeneration.from_pretrained(BASE_WHISPER_MODEL, load_in_8bit=False, attn_implementation="sdpa")
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
-
+    
     model = PeftModel.from_pretrained(model, model_id)
+    model.eval()
+    # model = model.to_bettertransformer()
 
     # config = LoraConfig(use_dora=True, r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
     # model = get_peft_model(model, config)
