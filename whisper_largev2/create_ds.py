@@ -12,7 +12,7 @@ BASE_DIR = "/exp/whisper_yue/"
 SAVE_DIR = "/exp/whisper_yue/whisper_data"
 
 SAMPLING_RATE = 16_000
-SPLIT_LENGTH = 4000
+SPLIT_LENGTH = 2000
 processor = WhisperProcessor.from_pretrained("openai/whisper-large-v2", task="transcribe")
 
 def load_canto_map():
@@ -198,9 +198,10 @@ def load_pseudo_ds():
     return
 
 def load_others():
+    # return
     load_cv()
-    load_canto_asr()
-    load_canto_map()
+    # load_canto_asr()
+    # load_canto_map()
 
 if __name__ == "__main__":
     p1 = Process(target=load_others)

@@ -10,13 +10,13 @@ from typing import Any, Dict, List, Union
 
 import torch
 
-from datasets import interleave_datasets, load_dataset, IterableDataset, IterableDatasetDict, Audio, load_from_disk
+from datasets import interleave_datasets, load_dataset, IterableDataset, Audio, load_from_disk, concatenate_datasets
 from transformers.trainer_pt_utils import IterableDatasetShard
 
 from transformers import WhisperProcessor, WhisperForConditionalGeneration, Seq2SeqTrainingArguments
 from transformers import TrainerCallback, Seq2SeqTrainer
 from peft import prepare_model_for_int8_training
-
+from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model, PeftConfig
 import evaluate
 
 # from augment.pt_augs import do_time_stretch, do_freq_masking, do_time_masking
@@ -94,27 +94,30 @@ class PeftSavingCallback(TrainerCallback):
 
 if __name__ == "__main__":
     processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, language=LANGUAGE, task=TASK)  
-    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=False)
-    model.config.forced_decoder_ids = None
-    model.config.suppress_tokens = []
-    print("Loaded PEFT LORA Model")
-    model = prepare_model_for_int8_training(model)
+    # model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=False)
+    # model.config.forced_decoder_ids = None
+    # model.config.suppress_tokens = []
+    # print("Loaded PEFT LORA Model")
+    # model = prepare_model_for_int8_training(model)
 
-    # as Whisper model uses Conv layer in encoder, checkpointing disables grad computation
-    # to avoid this, make the inputs trainable
-    def make_inputs_require_grad(module, input, output):
-        output.requires_grad_(True)
-    model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+    # config = LoraConfig(use_dora=True, r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
+    # model = get_peft_model(model, config)
+    # model.print_trainable_parameters()
+    # model.config.use_cache = False
 
+    peft_model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-10000"
 
-    from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model
-
-    config = LoraConfig(use_dora=True, r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
-    model = get_peft_model(model, config)
+    peft_config = PeftConfig.from_pretrained(peft_model_id)
+    model = WhisperForConditionalGeneration.from_pretrained(
+        peft_config.base_model_name_or_path, load_in_8bit=False, device_map="auto"
+    )
+    
+    model = PeftModel.from_pretrained(model, peft_model_id, is_trainable=True)
+    model.enable_input_require_grads()
     model.print_trainable_parameters()
-    model.config.use_cache = False
 
-    ds_train_vect = load_from_disk("/exp/whisper_yue/whisper_large_data/combined_canto_train")
+
+    ds_train_vect = concatenate_datasets([load_from_disk("/exp/whisper_yue/whisper_data/cv_train"), load_from_disk("/exp/whisper_yue/whisper_data/cv_train_2")])
     print(f"Train Len: {ds_train_vect}")
     ds_train_vect = ds_train_vect.filter(
         is_audio_in_length_range,
@@ -125,11 +128,10 @@ if __name__ == "__main__":
         input_columns=["labels"],
     )
     print(f"Train Len: {ds_train_vect}")
-    ds_test_vect = load_from_disk("/exp/whisper_yue/whisper_large_data/cv_test")
+    ds_test_vect = load_from_disk("/exp/whisper_yue/whisper_data/cv_test")
     print("Loaded datasets")
 
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
-
 
     def compute_metrics(pred):
         pred_ids = pred.predictions
@@ -141,31 +143,31 @@ if __name__ == "__main__":
         # we do not want to group tokens when computing the metrics
         pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
         label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-        if do_normalize_eval:
-            pred_str = [pred for pred in pred_str]
-            label_str = [label for label in label_str]
+        # if do_normalize_eval:
+        #     pred_str = [pred for pred in pred_str]
+        #     label_str = [label for label in label_str]
 
         cer = 100 * metric.compute(predictions=pred_str, references=label_str)
 
         return {"cer": cer}
 
-    output_dir="./model_out_01"
+    output_dir="./model_out_02"
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=18,
-        gradient_accumulation_steps=5,  # increase by 2x for every 2x decrease in batch size
+        per_device_train_batch_size=12,
+        gradient_accumulation_steps=8,  # increase by 2x for every 2x decrease in batch size
         learning_rate=2e-5,
-        warmup_steps=700,
+        warmup_steps=0,
         gradient_checkpointing=True,
-        num_train_epochs=5,
+        num_train_epochs=10,
         fp16=True,
         evaluation_strategy="steps",
         per_device_eval_batch_size=8,
         predict_with_generate=True,
         generation_max_length=225,
-        save_steps=500,
-        eval_steps=500,
+        save_steps=100,
+        eval_steps=100,
         logging_steps=100,
         report_to=["tensorboard"],
         load_best_model_at_end=True,

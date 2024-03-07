@@ -25,14 +25,14 @@ if __name__ == "__main__":
     dataset = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16_000))
 
-    BASE_WHISPER_MODEL = "openai/whisper-large-v3"
+    BASE_WHISPER_MODEL = "openai/whisper-large-v2   "
     LANGUAGE = "yue"
     TASK = "transcribe"
 
     model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-3500"
 
     processor = WhisperProcessor.from_pretrained(BASE_WHISPER_MODEL, language=LANGUAGE, task=TASK)  
-    model = WhisperForConditionalGeneration.from_pretrained(BASE_WHISPER_MODEL, load_in_8bit=False, use_flash_attention_2=True)
+    model = WhisperForConditionalGeneration.from_pretrained(BASE_WHISPER_MODEL, load_in_8bit=False)
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
 
