@@ -7,7 +7,10 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, AutoModelForC
 from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model
 from transformers import WhisperProcessor, WhisperForConditionalGeneration, Seq2SeqTrainingArguments
 
+import sys
+sys.path.append('/exp/whisper_yue/finetune-whisper-canto')
 
+from 
 metric = evaluate.load("cer")
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -29,7 +32,7 @@ if __name__ == "__main__":
     LANGUAGE = "yue"
     TASK = "transcribe"
 
-    model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-500"
+    model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_02/checkpoint-4800"
 
     processor = WhisperProcessor.from_pretrained(BASE_WHISPER_MODEL, language=LANGUAGE, task=TASK)  
     model = WhisperForConditionalGeneration.from_pretrained(BASE_WHISPER_MODEL, load_in_8bit=False, attn_implementation="sdpa")
