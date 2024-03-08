@@ -199,16 +199,16 @@ def load_pseudo_ds():
 
 def load_others():
     # return
-    load_cv()
-    # load_canto_asr()
-    # load_canto_map()
+    # load_cv()
+    load_canto_asr()
+    load_canto_map()
 
 if __name__ == "__main__":
     p1 = Process(target=load_others)
     p1.start()
 
-    p2 = Process(target=load_pseudo_ds)
-    p2.start()
+    # p2 = Process(target=load_pseudo_ds)
+    # p2.start()
 
     # load_cv()
     # load_canto_asr()
@@ -216,6 +216,6 @@ if __name__ == "__main__":
     # load_pseudo_ds()
 
 
-    p1.join()
-    p2.join()
-    merge_everything()
+    # p1.join()
+    # p2.join()
+    # merge_everything()

@@ -19,8 +19,6 @@ from transformers import TrainingArguments, TrainerCallback, Trainer
 
 import evaluate
 
-from augment.pt_augs import get_spectrogram, do_time_stretch, do_freq_masking, do_time_masking
-
 metric = evaluate.load("cer")
 
 SAMPLING_RATE = 16_000
@@ -30,25 +28,6 @@ max_input_length = 30.0
 def is_audio_in_length_range(length):
     return length < max_input_length
 
-def process_function(datum):
-    if np.random.random() > 0.3:
-        return datum
-
-    aug_feat = torch.tensor(datum)
-    aug_feat = torch.unsqueeze(aug_feat, 2)
-    
-    chances = np.random.random()
-    if chances < 0.3:
-        aug_feat = do_time_masking(aug_feat)
-    if chances > 0.2:
-        aug_feat = do_time_stretch(aug_feat)
-    if 0.3 < chances < 0.7:
-        aug_feat = do_freq_masking(aug_feat)
-
-    aug_feat = aug_feat.squeeze()
-    aug_feat = aug_feat.tolist()
-    # datum["input_features"] = aug_feat
-    return aug_feat
 
 @dataclass
 class DataCollatorCTCWithPadding:
@@ -141,11 +120,11 @@ if __name__ == "__main__":
         output_dir="canto_bertw2v2",
         # group_by_length=True,
         do_eval=False,
-        per_device_train_batch_size=3,
+        per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
-        gradient_accumulation_steps=32,
+        gradient_accumulation_steps=64,
         evaluation_strategy="steps",
-        num_train_epochs=30,
+        num_train_epochs=1,
         gradient_checkpointing=True,
         fp16=True,
         save_steps=600,
