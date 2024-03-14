@@ -132,7 +132,7 @@ if __name__ == "__main__":
         logging_steps=300,
         learning_rate=5e-5,
         warmup_steps=2000,
-        save_total_limit=5
+        save_total_limit=2
     )
 
     trainer = Trainer(
