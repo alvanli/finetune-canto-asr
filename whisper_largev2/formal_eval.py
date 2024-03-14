@@ -10,9 +10,11 @@ from transformers import WhisperProcessor, WhisperForConditionalGeneration, Seq2
 import sys
 sys.path.append('/exp/whisper_yue/finetune-whisper-canto')
 
-from 
-metric = evaluate.load("cer")
+from normalize_canto import normalize
 
+metric = evaluate.load("cer")
+LANGUAGE = "yue"
+TASK = "transcribe"
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
@@ -28,27 +30,28 @@ if __name__ == "__main__":
     dataset = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16_000))
 
-    BASE_WHISPER_MODEL = "openai/whisper-large-v2"
-    LANGUAGE = "yue"
-    TASK = "transcribe"
+    # BASE_WHISPER_MODEL = "openai/whisper-large-v2"
+    # model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-10000"
 
-    model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_02/checkpoint-4800"
+    # processor = WhisperProcessor.from_pretrained(BASE_WHISPER_MODEL, language=LANGUAGE, task=TASK)  
+    # model = WhisperForConditionalGeneration.from_pretrained(BASE_WHISPER_MODEL, load_in_8bit=False, attn_implementation="sdpa")
+    # model.config.forced_decoder_ids = None
+    # model.config.suppress_tokens = []
+    
+    # model = PeftModel.from_pretrained(model, model_id)
+    # model.eval()
+    # model.to(device)
 
+
+    # BASE_WHISPER_MODEL = "simonl0909/whisper-large-v2-cantonese"
+    BASE_WHISPER_MODEL = "alvanlii/whisper-small-cantonese"
     processor = WhisperProcessor.from_pretrained(BASE_WHISPER_MODEL, language=LANGUAGE, task=TASK)  
     model = WhisperForConditionalGeneration.from_pretrained(BASE_WHISPER_MODEL, load_in_8bit=False, attn_implementation="sdpa")
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
-    
-    model = PeftModel.from_pretrained(model, model_id)
     model.eval()
-    # model = model.to_bettertransformer()
-
-    # config = LoraConfig(use_dora=True, r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
-    # model = get_peft_model(model, config)
-    # model.print_trainable_parameters()
-    # model.config.use_cache = False
-    
     model.to(device)
+
 
     all_time = 0
     predictions = []
@@ -62,9 +65,10 @@ if __name__ == "__main__":
         output, gen_time = assisted_generate_with_time(model, inputs, )
         all_time += gen_time
         decoded_output = processor.batch_decode(output, skip_special_tokens=True)[0]
-        predictions.append(decoded_output)
-        print(sample['sentence'], decoded_output)
-        references.append(sample["sentence"])
+        predictions.append(normalize(decoded_output))
+        references.append(normalize(sample["sentence"]))
+        print(predictions[-1], references[-1])
+
         
     print(f"took {all_time} for {len(references)} samples on GPU")
     cer = metric.compute(references=references, predictions=predictions)
