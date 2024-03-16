@@ -35,10 +35,11 @@ def data(dataset):
 if __name__ == "__main__":
     ds_test_vect = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)
     # repo_name = "alvanlii/whisper-small-cantonese"
-    # repo_name = "/exp/whisper_yue/finetune_bertw2v2_canto/canto_bertw2v2/checkpoint-24600"
+    repo_name = "/exp/whisper_yue/finetune-whisper-canto/w2v2-bert/canto_bertw2v2/checkpoint-6000"
     # repo_name = "simonl0909/whisper-large-v2-cantonese"
-    repo_name = "CAiRE/wav2vec2-large-xlsr-53-cantonese"
+    # repo_name = "CAiRE/wav2vec2-large-xlsr-53-cantonese"
     # repo_name = "alvanlii/wav2vec2-BERT-cantonese"
+
     bert_asr = pipeline(
         "automatic-speech-recognition", model=repo_name, device="cuda"
     )

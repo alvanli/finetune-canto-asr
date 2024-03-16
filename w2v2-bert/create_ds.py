@@ -8,24 +8,21 @@ from bs4 import BeautifulSoup as bs
 import librosa  
 import soundfile as sf
 
+
+import sys
+sys.path.append('/exp/whisper_yue/finetune-whisper-canto')
+
+from normalize_canto import normalize
+
+
 BASE_DIR = "/exp/whisper_yue/"
-SAVE_DIR = "/exp/whisper_yue/whisper_data"
+SAVE_DIR = "/exp/whisper_yue/w2v2_data"
 
 SAMPLING_RATE = 16_000
-SPLIT_LENGTH = 2000
+SPLIT_LENGTH = 1000
 tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("./tokenizer", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
 feature_extractor = SeamlessM4TFeatureExtractor(feature_size=80, num_mel_bins=80, sampling_rate=SAMPLING_RATE, padding_value=0.0)
 processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
-
-
-chars_to_remove_regex = '[\,\?\.\!\-\;\:\"\“\%\‘\”\�\'\»\«]'
-punc = re.compile(u'[\u3002\u3005-\u3007\u3010\u3011\uFF0C\uFF1A\uFF1F\uFFE4\uFFE9]')
-
-def remove_special_characters(batch):
-    # remove special characters
-    batch["sentence"] = re.sub(chars_to_remove_regex, '', batch["sentence"]).lower()
-    batch["sentence"] = punc.sub('', batch["sentence"])
-    return batch
 
 
 def load_canto_map():
@@ -49,8 +46,7 @@ def load_canto_map():
             try:
                 feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
                 # clean_sentence = curr_val
-                clean_sentence = re.sub(chars_to_remove_regex, '', curr_val)
-                clean_sentence = punc.sub('', clean_sentence)
+                clean_sentence = normalize(curr_val)
                 input_ids = processor(text=clean_sentence).input_ids
 
                 info_dict["input_features"].append(feature),
@@ -100,8 +96,7 @@ def load_canto_asr():
         if len(content.strip()) > 3:
             feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
             # clean_sentence = content
-            clean_sentence = re.sub(chars_to_remove_regex, '', content)
-            clean_sentence = punc.sub('', clean_sentence)
+            clean_sentence = normalize(content)
             input_ids = processor(text=clean_sentence).input_ids
 
             info_dict["input_features"].append(feature)
@@ -144,7 +139,7 @@ def load_cv():
         audio = batch["audio"]
         batch["input_features"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
         batch["input_length"] = len(audio["array"]) / audio["sampling_rate"]
-        batch["labels"] = processor(text=batch["sentence"]).input_ids
+        batch["labels"] = processor(text=normalize(batch["sentence"])).input_ids
         return batch
 
     ds_train = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="train", use_auth_token=True)  
@@ -175,10 +170,14 @@ def load_pseudo_ds():
     count_idx = 1
     length_total_seconds = 0
     for idx, audio_file in enumerate(all_audio_files):  
-        transcript_file = audio_file.replace("audio", "clean").replace(".mp3", ".txt").replace(".flac", ".txt")
+        transcript_file = audio_file.replace("audio", "common_w2v2_lv2").replace(".mp3", ".txt")
+        transcript_file_1 = audio_file.replace("audio", "clean").replace(".flac", ".txt")
+
+        if not os.path.isfile(transcript_file) and not os.path.isfile(transcript_file_1):
+            continue
 
         if not os.path.isfile(transcript_file):
-            continue
+            transcript_file = transcript_file_1
 
         with open(transcript_file, "r", encoding="utf-8") as f:
             transcript = f.read()
@@ -187,8 +186,7 @@ def load_pseudo_ds():
         input_length = len(arr) / rate
         if len(transcript.strip()) > 5:
             feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
-            clean_sentence = re.sub(chars_to_remove_regex, '', transcript)
-            clean_sentence = punc.sub('', clean_sentence)
+            clean_sentence = normalize(transcript)
             input_ids = processor(text=clean_sentence).input_ids
 
             info_dict["input_features"].append(feature)
@@ -216,7 +214,6 @@ def load_pseudo_ds():
     return
 
 def load_others():
-    return
     load_cv()
     load_canto_asr()
     load_canto_map()
@@ -227,12 +224,6 @@ if __name__ == "__main__":
 
     p2 = Process(target=load_pseudo_ds)
     p2.start()
-
-    # load_cv()
-    # load_canto_asr()
-    # load_canto_map()
-    # load_pseudo_ds()
-
 
     p1.join()
     p2.join()
