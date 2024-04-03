@@ -1,16 +1,16 @@
-python3 run_distillation.py \
+accelerate launch run_distillation.py \
   --model_name_or_path "./distil-small-init" \
-  --teacher_model_name_or_path "/exp/whisper_yue/finetune-whisper-canto/whisper_small/model_out/checkpoint-15000" \
+  --teacher_model_name_or_path "alvanlii/whisper-small-cantonese" \
   --eval_steps 500 \
   --save_steps 500 \
-  --warmup_steps 3000 \
-  --learning_rate 0.000001 \
-  --lr_scheduler_type "constant_with_warmup" \
+  --warmup_steps 2000 \
+  --learning_rate 0.001 \
+  --lr_scheduler_type "cosine" \
   --logging_steps 50 \
   --save_total_limit 3 \
-  --max_steps 20000 \
+  --max_steps 30000 \
   --cer_threshold 15 \
-  --per_device_train_batch_size 48 \
+  --per_device_train_batch_size 32 \
   --per_device_eval_batch_size 24 \
   --dataloader_num_workers 16 \
   --preprocessing_num_workers 16 \
@@ -25,5 +25,5 @@ python3 run_distillation.py \
   --language "zh" \
   --timestamp_probability 0.0 \
   --use_pseudo_labels \
-  --gradient_accumulation_steps 2  \
-  --weight_decay 0.9
+  --gradient_accumulation_steps 12  \
+  --weight_decay 0.9 

@@ -2,17 +2,20 @@ import glob, os, re, json
 from tqdm import tqdm
 from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets, Audio
 from transformers import WhisperProcessor, WhisperTokenizerFast
-
-from bs4 import BeautifulSoup as bs
+from multiprocessing import Process
 import librosa  
 import soundfile as sf
 
 BASE_DIR = "/exp/whisper_yue/"
 SAVE_DIR = "/exp/whisper_yue/whisper_data"
 SAMPLING_RATE = 16_000
+SPLIT_LENGTH = 1000
+model_path = "alvanlii/whisper-small-cantonese"
+processor = WhisperProcessor.from_pretrained(model_path, task="transcribe", language="yue")
+tokenizer = WhisperTokenizerFast.from_pretrained(model_path)
 
 
-def load_canto_map(processor, tokenizer):
+def load_canto_map():
     input_dir = BASE_DIR + "/CantoMap/processed"
     with open(input_dir+"/annots.json", "r", encoding="utf-8") as f:
         lines = f.read()
@@ -39,7 +42,7 @@ def load_canto_map(processor, tokenizer):
                 info_dict["labels"].append(input_ids)
             except ValueError:
                 print("Bad error")
-        if idx % 5000 == 0 and idx != 0:
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
             ds = Dataset.from_dict(mapping=info_dict)
             ds.save_to_disk(f"{SAVE_DIR}/canto_map_{count_idx}")
             count_idx += 1
@@ -54,7 +57,7 @@ def load_canto_map(processor, tokenizer):
     return
 
 
-def load_canto_asr(processor, tokenizer):
+def load_canto_asr():
     audio_base_path = BASE_DIR + "/cantonese-asr/dataset/data/audio"
     transcript_base_path = BASE_DIR + "/cantonese-asr/dataset/data/transcription"
     all_audio_files = glob.glob(audio_base_path+"/*.wav")
@@ -83,7 +86,7 @@ def load_canto_asr(processor, tokenizer):
             info_dict["input_length"].append(input_length)
             info_dict["labels"].append(input_ids)
 
-        if idx % 5000 == 0 and idx != 0:
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
             ds = Dataset.from_dict(mapping=info_dict)
             ds.save_to_disk(f"{SAVE_DIR}/canto_asr_{count_idx}")
             count_idx += 1
@@ -99,16 +102,61 @@ def load_canto_asr(processor, tokenizer):
     return
 
 
-def merge_map_asr():
-    ds_canto_asr = [load_from_disk(f"/exp/whisper_yue/whisper_data/canto_asr_{idx}") for idx in range(1,18)]
-    ds_canto_map = [load_from_disk(f"/exp/whisper_yue/whisper_data/canto_map_{idx}") for idx in range(1,9)]
-    ds_train_vect = load_from_disk("/exp/whisper_yue/whisper_data/cv_train")
-    ds_train_vect_2 = load_from_disk("/exp/whisper_yue/whisper_data/cv_train_2")
-    big_audio_ds = concatenate_datasets(ds_canto_asr + ds_canto_map + [ds_train_vect, ds_train_vect_2])
-    big_audio_ds.save_to_disk(f"{SAVE_DIR}/combined_canto_train")
+def load_pseudo_ds():
+    all_audio_files = sorted(glob.glob(f"{BASE_DIR}/canto-youtube-dl/audio/*.mp3") + glob.glob(f"{BASE_DIR}/sbs_cantonese/audio/*.flac"))
+    info_dict = {
+        "input_features": [],
+        "input_length": [],
+        "labels": []
+    }
+    count_idx = 1
+    length_total_seconds = 0
+    for idx, audio_file in enumerate(all_audio_files):  
+        transcript_file = audio_file.replace("audio", "common_w2v2_lv2").replace(".mp3", ".txt")
+        transcript_file_1 = audio_file.replace("audio", "clean").replace(".flac", ".txt")
+
+        if not os.path.isfile(transcript_file) and not os.path.isfile(transcript_file_1):
+            continue
+
+        if not os.path.isfile(transcript_file):
+            transcript_file = transcript_file_1
+
+        with open(transcript_file, "r", encoding="utf-8") as f:
+            transcript = f.read()
+        arr, rate = librosa.load(audio_file, sr=SAMPLING_RATE)
+        length_seconds = librosa.get_duration(y=arr, sr=rate)
+        input_length = len(arr) / rate
+        if len(transcript.strip()) > 5:
+            feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
+            clean_sentence = transcript
+            input_ids = processor(text=clean_sentence).input_ids
+
+            info_dict["input_features"].append(feature)
+            info_dict["input_length"].append(input_length)
+            info_dict["labels"].append(input_ids)
+            length_total_seconds += length_seconds
+
+        if idx % SPLIT_LENGTH == 0 and idx != 0:
+            ds = Dataset.from_dict(mapping=info_dict)
+            ds.save_to_disk(f"{SAVE_DIR}/canto_pseudo_{count_idx}")
+            count_idx += 1
+            info_dict = {
+                "input_features": [],
+                "input_length": [],
+                "labels": []
+            }    
+
+    ds = Dataset.from_dict(mapping=info_dict)
+    ds.save_to_disk(f"{SAVE_DIR}/canto_pseudo_end")
+
+    print("="*10)
+    print(f"Finished loading pseudo dataset")
+    print(f"Length: {length_total_seconds} seconds")
+    print("="*10)
+    return
 
 
-def load_cv(processor, tokenizer):
+def load_cv():
     def prepare_dataset(batch):
         audio = batch["audio"]
         batch["input_features"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
@@ -135,13 +183,29 @@ def load_cv(processor, tokenizer):
     return
 
 
-if __name__ == "__main__":
-    model_path = "simonl0909/whisper-large-v2-cantonese"
-    processor = WhisperProcessor.from_pretrained(model_path, task="transcribe", language="yue")
-    tokenizer = WhisperTokenizerFast.from_pretrained(model_path)
-    
-    load_cv(processor, tokenizer)
-    # load_canto_asr(processor, tokenizer)
-    # load_canto_map(processor, tokenizer)
+def merge_everything():
+    ds_canto_asr = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_asr*")]
+    ds_canto_map = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_map*")]
+    ds_canto_pseudo = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_pseudo*")]
+    ds_train_vect = load_from_disk(f"{SAVE_DIR}/cv_train")
+    ds_train_vect_2 = load_from_disk(f"{SAVE_DIR}/cv_train_2")
+    big_audio_ds = concatenate_datasets(ds_canto_asr + ds_canto_map + ds_canto_pseudo + [ds_train_vect, ds_train_vect_2])
+    big_audio_ds.save_to_disk(f"{SAVE_DIR}/combined_canto_train")
 
-    # merge_map_asr()
+
+def load_others():
+    load_cv()
+    load_canto_asr()
+    load_canto_map()
+
+
+if __name__ == "__main__":
+    p1 = Process(target=load_others)
+    p1.start()
+
+    p2 = Process(target=load_pseudo_ds)
+    p2.start()
+
+    p1.join()
+    p2.join()
+    merge_everything()

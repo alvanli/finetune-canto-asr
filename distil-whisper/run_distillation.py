@@ -749,11 +749,19 @@ def main():
     max_label_length = 448
     def is_label_in_length_range(labels):
         return len(labels) < max_label_length
+    
+    max_input_length = 30.0
+
+    def is_audio_in_length_range(length):
+        return length < max_input_length
 
     if training_args.do_train:
-        raw_datasets["train"] = load_from_disk("/exp/whisper_yue/whisper_data/combined_canto_train_filtered").filter(
+        raw_datasets["train"] = load_from_disk("/exp/whisper_yue/whisper_data/combined_canto_train").filter(
             is_label_in_length_range,
             input_columns=["labels"],
+        ).filter(
+            is_audio_in_length_range,
+            input_columns=["input_length"],
         )
         raw_datasets_train_features = list(raw_datasets["train"].features.keys())
 
