@@ -2,8 +2,8 @@ version: "3.8"
 services:
   alv_shit:
     ipc: host
-    # ports:
-    #   - "8869:8869"
+    ports:
+      - "8008:8008"
     #   - "8870:8870"
     build:
       context: .

@@ -3,12 +3,12 @@ accelerate launch run_distillation.py \
   --teacher_model_name_or_path "alvanlii/whisper-small-cantonese" \
   --eval_steps 500 \
   --save_steps 500 \
-  --warmup_steps 2000 \
-  --learning_rate 0.001 \
+  --warmup_steps 1000 \
+  --learning_rate 0.00005 \
   --lr_scheduler_type "cosine" \
   --logging_steps 50 \
   --save_total_limit 3 \
-  --max_steps 30000 \
+  --max_steps 20000 \
   --cer_threshold 15 \
   --per_device_train_batch_size 32 \
   --per_device_eval_batch_size 24 \

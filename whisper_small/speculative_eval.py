@@ -34,7 +34,7 @@ if __name__ == "__main__":
 
     processor = AutoProcessor.from_pretrained(model_id)
 
-    assistant_model_id = "/exp/whisper_yue/finetune-whisper-canto/model_out/checkpoint-15000"
+    assistant_model_id = "alvanlii/distil-whisper-small-cantonese"
 
     assistant_model = AutoModelForSpeechSeq2Seq.from_pretrained(
         assistant_model_id,

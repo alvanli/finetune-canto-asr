@@ -26,7 +26,7 @@ SAMPLING_RATE = 16_000
 max_input_length = 30.0
 
 def is_audio_in_length_range(length):
-    return length < max_input_length
+    return length < max_input_length and length > 1.5
 
 
 @dataclass
@@ -75,8 +75,8 @@ def compute_metrics(pred):
 
 
 if __name__ == "__main__":
-    ds_train_vect = load_from_disk("/exp/whisper_yue/whisper_data/combined_canto_train")
-    ds_test_vect = load_from_disk("/exp/whisper_yue/whisper_data/cv_test")
+    ds_train_vect = load_from_disk("/exp/whisper_yue/w2v2_data/combined_canto_train_filtered")
+    ds_test_vect = load_from_disk("/exp/whisper_yue/w2v2_data/cv_test")
     print("Loaded datasets")
 
     tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("./tokenizer", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
@@ -101,19 +101,21 @@ if __name__ == "__main__":
 
     data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
 
-    # "facebook/w2v-bert-2.0"
+    # PRETRAINED_PATH = "facebook/w2v-bert-2.0"
+    # PRETRAINED_PATH = "alvanlii/wav2vec2-BERT-cantonese"
+    PRETRAINED_PATH = "/exp/whisper_yue/finetune-whisper-canto/w2v2-bert/from_pretrained_1/canto_bertw2v2/checkpoint-7200"
     model = Wav2Vec2BertForCTC.from_pretrained(
-        "alvanlii/wav2vec2-BERT-cantonese",
-        attention_dropout=0.1,
+        PRETRAINED_PATH,
+        attention_dropout=0.0,
         hidden_dropout=0.0,
-        feat_proj_dropout=0.1,
+        feat_proj_dropout=0.0,
         mask_time_prob=0.0,
         layerdrop=0.1,
         ctc_zero_infinity=True,
         ctc_loss_reduction="mean",
         add_adapter=True,
-        pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(processor.tokenizer),
+        pad_token_id=tokenizer.pad_token_id,
+        vocab_size=len(tokenizer),
     )
 
     training_args = TrainingArguments(
@@ -122,16 +124,16 @@ if __name__ == "__main__":
         do_eval=False,
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
-        gradient_accumulation_steps=64,
+        gradient_accumulation_steps=52,
         evaluation_strategy="steps",
-        num_train_epochs=1,
+        num_train_epochs=3,
         gradient_checkpointing=True,
         fp16=True,
         save_steps=600,
         # eval_steps=300,
         logging_steps=300,
-        learning_rate=5e-5,
-        warmup_steps=2000,
+        learning_rate=2e-5,
+        warmup_steps=0,
         save_total_limit=2
     )
 
