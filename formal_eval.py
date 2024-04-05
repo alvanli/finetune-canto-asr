@@ -3,18 +3,23 @@ import time
 import torch
 import evaluate 
 from datasets import load_dataset, Audio
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, AutoModelForCTC, Wav2Vec2BertProcessor
-
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, AutoModelForCTC, Wav2Vec2BertProcessor, Wav2Vec2Processor
+from peft import PeftConfig, PeftModel
 
 import sys
 sys.path.append('/exp/whisper_yue/finetune-whisper-canto')
 
 from normalize_canto import normalize
 
-NORMALIZE = False
-IS_WAV2VEC = True
-USE_GPU = False
-model_id = "alvanlii/wav2vec2-BERT-cantonese"
+NORMALIZE = True
+IS_WAV2VEC = False
+IS_LORA = True
+USE_GPU = True
+# model_id = "alvanlii/wav2vec2-BERT-cantonese"
+# model_id = "simonl0909/whisper-large-v2-cantonese"
+# model_id = 'CAiRE/wav2vec2-large-xlsr-53-cantonese'
+# model_id = 'alvanlii/whisper-largev2-cantonese-peft-lora'
+model_id = 'Oblivion208/whisper-large-v2-lora-cantonese'
 
 metric = evaluate.load("cer")
 
@@ -48,7 +53,10 @@ if __name__ == "__main__":
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16_000))
 
     if IS_WAV2VEC:
+        # processor = Wav2Vec2Processor.from_pretrained(model_id)
         processor = Wav2Vec2BertProcessor.from_pretrained(model_id)
+    elif IS_LORA:
+        processor = None
     else:
         processor = AutoProcessor.from_pretrained(model_id)
 
@@ -58,6 +66,14 @@ if __name__ == "__main__":
             torch_dtype=torch_dtype
         )
         model.to(device)
+    elif IS_LORA:
+        peft_config = PeftConfig.from_pretrained(model_id)
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            peft_config.base_model_name_or_path, load_in_8bit=True, device_map="auto", attn_implementation="sdpa",
+             low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+        )
+        model = PeftModel.from_pretrained(model, model_id)
+        processor = AutoProcessor.from_pretrained(peft_config.base_model_name_or_path)
     else:
         model = AutoModelForSpeechSeq2Seq.from_pretrained(
             model_id,
@@ -80,6 +96,7 @@ if __name__ == "__main__":
         
         if IS_WAV2VEC:
             features = inputs.input_features
+            # features = inputs.input_values
             output, gen_time = w2v_pedict(model, features)
         else:
             output, gen_time = generate_with_time(model, inputs)
@@ -98,7 +115,7 @@ if __name__ == "__main__":
 
         references.append(ground_truth)
         
-        print(f"{predictions[-1]}==={references[-1]}")
+        # print(f"{predictions[-1]}==={references[-1]}")
         
     print(f"took {all_time} for {len(references)} samples on GPU")
     cer = metric.compute(references=references, predictions=predictions)

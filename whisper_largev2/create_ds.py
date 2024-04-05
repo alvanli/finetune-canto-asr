@@ -1,19 +1,33 @@
 import glob, os, re, json
+import numpy as np
 from tqdm import tqdm
 from multiprocessing import Process
 from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets, Audio
 from transformers import WhisperProcessor
 
-from bs4 import BeautifulSoup as bs
+from audiomentations import (
+    Compose, AddGaussianNoise, TimeStretch, PitchShift, AirAbsorption, TimeMask
+)
+
+
 import librosa  
 import soundfile as sf
 
 BASE_DIR = "/exp/whisper_yue/"
-SAVE_DIR = "/exp/whisper_yue/whisper_data"
+SAVE_DIR = "/exp/whisper_yue/whisper_large_data"
 
 SAMPLING_RATE = 16_000
-SPLIT_LENGTH = 2000
+SPLIT_LENGTH = 500
+MULTIPLIER = 5
 processor = WhisperProcessor.from_pretrained("openai/whisper-large-v2", task="transcribe")
+
+augment = Compose([
+    AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.3),
+    TimeStretch(min_rate=0.8, max_rate=1.25, p=0.3),
+    PitchShift(min_semitones=-4, max_semitones=4, p=0.3),
+    AirAbsorption(min_distance=10.0, max_distance=50.0, p=0.3),
+    TimeMask(min_band_part=0.1,max_band_part=0.15,fade=True,p=0.1)
+])
 
 def load_canto_map():
     input_dir = BASE_DIR + "/CantoMap/processed"
@@ -28,10 +42,11 @@ def load_canto_map():
     count_idx = 1
     length_total_seconds = 0
 
-    for idx, key in enumerate(list(line_dict.keys())):
+    for idx, key in enumerate(list(line_dict.keys()) * MULTIPLIER):
         curr_val = line_dict[key]
         if len(curr_val.strip()) > 3:
             arr, rate = librosa.load(f"{input_dir}/{key}.wav", sr=SAMPLING_RATE)
+            arr = augment(samples=arr, sample_rate=SAMPLING_RATE)
             length_seconds = librosa.get_duration(y=arr, sr=rate)
             try:
                 feature = processor.feature_extractor(arr, sampling_rate=rate).input_features[0]
@@ -75,11 +90,12 @@ def load_canto_asr():
     }
     count_idx = 1
     length_total_seconds = 0
-    for idx, audio_file in enumerate(all_audio_files):  
+    for idx, audio_file in enumerate(list(all_audio_files) * MULTIPLIER):  
         transcript_file = audio_file.replace("audio", "transcription").replace(".wav", ".txt")
         with open(transcript_file, "r", encoding="utf-8") as f:
             content = f.read()
         arr, rate = librosa.load(audio_file, sr=SAMPLING_RATE)
+        arr = augment(samples=arr, sample_rate=SAMPLING_RATE)
         length_seconds = librosa.get_duration(y=arr, sr=rate)
         input_length = len(arr) / rate
         if len(content.strip()) > 3:
@@ -115,39 +131,46 @@ def load_canto_asr():
 def merge_everything():
     ds_canto_asr = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_asr*")]
     ds_canto_map = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_map*")]
-    ds_canto_pseudo = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_pseudo*")]
-    ds_train_vect = load_from_disk(f"{SAVE_DIR}/cv_train")
-    ds_train_vect_2 = load_from_disk(f"{SAVE_DIR}/cv_train_2")
-    big_audio_ds = concatenate_datasets(ds_canto_asr + ds_canto_map + ds_canto_pseudo + [ds_train_vect, ds_train_vect_2])
+    ds_train_vect = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/cv_train*")]
+
+    big_audio_ds = concatenate_datasets(ds_canto_asr + ds_canto_map + ds_train_vect)
     big_audio_ds.save_to_disk(f"{SAVE_DIR}/combined_canto_train")
 
 
+def prepare_dataset(batch):
+    audio = batch["audio"]
+    arr = augment(samples=audio["array"], sample_rate=SAMPLING_RATE)
+    batch["input_features"] = processor(arr, sampling_rate=audio["sampling_rate"]).input_features[0]
+    batch["input_length"] = len(arr) / audio["sampling_rate"]
+    batch["labels"] = processor(text=batch["sentence"]).input_ids
+    return batch
+  
+    
 def load_cv():
-    def prepare_dataset(batch):
-        audio = batch["audio"]
-        batch["input_features"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
-        batch["input_length"] = len(audio["array"]) / audio["sampling_rate"]
-        batch["labels"] = processor(text=batch["sentence"]).input_ids
-        return batch
+    for _ in range(MULTIPLIER):
+        ds_train = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="train", use_auth_token=True)  
+        ds_train_2 = load_dataset("mozilla-foundation/common_voice_16_0", "zh-HK", split="train", use_auth_token=True)  
 
-    ds_train = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="train", use_auth_token=True)  
-    ds_train_2 = load_dataset("mozilla-foundation/common_voice_16_0", "zh-HK", split="train", use_auth_token=True)  
-    ds_test = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)
+        ds_train = ds_train.cast_column("audio", Audio(sampling_rate=16_000))
+        ds_train_2 = ds_train_2.cast_column("audio", Audio(sampling_rate=16_000))
 
-    ds_train = ds_train.cast_column("audio", Audio(sampling_rate=16_000))
-    ds_train_2 = ds_train_2.cast_column("audio", Audio(sampling_rate=16_000))
-    ds_test = ds_test.cast_column("audio", Audio(sampling_rate=16_000))
+        ds_train = ds_train.map(prepare_dataset, remove_columns=ds_train.column_names)
+        ds_train_2 = ds_train_2.map(prepare_dataset, remove_columns=ds_train_2.column_names)
 
-    ds_train = ds_train.map(prepare_dataset, remove_columns=ds_train.column_names)
-    ds_train_2 = ds_train_2.map(prepare_dataset, remove_columns=ds_train_2.column_names)
-    ds_test = ds_test.map(prepare_dataset, remove_columns=ds_test.column_names)
-
-    ds_train.save_to_disk(f"{SAVE_DIR}/cv_train")
-    ds_train_2.save_to_disk(f"{SAVE_DIR}/cv_train_2")
-    ds_test.save_to_disk(f"{SAVE_DIR}/cv_test")
+        ds_train.save_to_disk(f"{SAVE_DIR}/cv_train_{np.random.randint(1,100)}")
+        ds_train_2.save_to_disk(f"{SAVE_DIR}/cv_train_{np.random.randint(1,100)}")
     return
 
 
+def load_cv_test():
+    ds_test = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)  
+
+    ds_test = ds_test.cast_column("audio", Audio(sampling_rate=16_000))
+
+    ds_test = ds_test.map(prepare_dataset, remove_columns=ds_test.column_names)
+
+    ds_test.save_to_disk(f"{SAVE_DIR}/cv_test")
+    
 def load_pseudo_ds():
     all_audio_files = sorted(glob.glob(f"{BASE_DIR}/canto-youtube-dl/audio/*.mp3") + glob.glob(f"{BASE_DIR}/sbs_cantonese/audio/*.flac"))
     info_dict = {
@@ -199,23 +222,32 @@ def load_pseudo_ds():
 
 def load_others():
     # return
-    # load_cv()
+    load_cv()
     load_canto_asr()
     load_canto_map()
 
 if __name__ == "__main__":
-    p1 = Process(target=load_others)
-    p1.start()
-
-    # p2 = Process(target=load_pseudo_ds)
+    load_cv_test()
+    
+    # p1 = Process(target=load_cv)
+    # p1.start()
+    
+    # p2 = Process(target=load_canto_asr)
     # p2.start()
+    
+    # p3 = Process(target=load_canto_map)
+    # p3.start()
 
-    # load_cv()
-    # load_canto_asr()
-    # load_canto_map()
-    # load_pseudo_ds()
+    # # p2 = Process(target=load_pseudo_ds)
+    # # p2.start()
+
+    # # load_cv()
+    # # load_canto_asr()
+    # # load_canto_map()
+    # # load_pseudo_ds()
 
 
     # p1.join()
     # p2.join()
+    # p3.join()
     # merge_everything()

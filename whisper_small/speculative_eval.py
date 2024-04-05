@@ -5,11 +5,17 @@ import evaluate
 from datasets import load_dataset, Audio
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, AutoModelForCausalLM
 
+import sys
+sys.path.append('/exp/whisper_yue/finetune-whisper-canto')
+
+from normalize_canto import normalize
+
 metric = evaluate.load("cer")
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
+device='cpu'
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
+torch_dtype = torch.float32
 
 def assisted_generate_with_time(model, inputs, **kwargs):
     start_time = time.time()
@@ -53,12 +59,18 @@ if __name__ == "__main__":
     for sample in tqdm(dataset):
         audio = sample["audio"]
         inputs = processor(audio["array"], sampling_rate=16_000, return_tensors="pt")
-        inputs = inputs.to(device=device, dtype=torch.float16)
+        inputs = inputs.to(device=device, dtype=torch_dtype)
         
         output, gen_time = assisted_generate_with_time(model, inputs, use_cache=True, assistant_model=assistant_model)
         all_time += gen_time
-        predictions.append(processor.batch_decode(output, skip_special_tokens=True)[0])
-        references.append(sample["sentence"])
+        
+        pred = processor.batch_decode(output, skip_special_tokens=True)[0]
+        truth = sample["sentence"]
+        
+        pred = normalize(pred)
+        truth = normalize(truth)
+        predictions.append(pred)
+        references.append(truth)
         
     print(f"took {all_time} for {len(references)} samples on CPU")
     cer = metric.compute(references=references, predictions=predictions)

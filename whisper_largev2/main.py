@@ -19,8 +19,8 @@ import evaluate
 WHISPER_MODEL = "openai/whisper-large-v2"
 LANGUAGE = "zh"
 TASK = "transcribe"
-TRAIN_FROM_SCRATCH = False
-SAVE_DIR = "/exp/whisper_yue/whisper_data"
+TRAIN_FROM_SCRATCH = True
+SAVE_DIR = "/exp/whisper_yue/whisper_large_data"
 
 
 metric = evaluate.load("cer")
@@ -36,6 +36,23 @@ def is_audio_in_length_range(length):
 
 def is_label_in_length_range(labels):
     return len(labels) < max_label_length
+
+
+def compute_metrics(pred):
+    pred_ids = pred.predictions
+    label_ids = pred.label_ids
+
+    # replace -100 with the pad_token_id
+    label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
+
+    # we do not want to group tokens when computing the metrics
+    pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+    label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+
+    cer = 100 * metric.compute(predictions=pred_str, references=label_str)
+
+    return {"cer": cer}
+
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -68,6 +85,8 @@ if __name__ == "__main__":
     processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, language=LANGUAGE, task=TASK) 
     model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=False)
 
+    model.generation_config.language = LANGUAGE
+
     if TRAIN_FROM_SCRATCH: 
         output_dir="./model_out_01"
 
@@ -80,13 +99,13 @@ if __name__ == "__main__":
         model.print_trainable_parameters()
         model.config.use_cache = False
 
-        # as Whisper model uses Conv layer in encoder, checkpointing disables grad computation
-        # to avoid this, make the inputs trainable
-        def make_inputs_require_grad(module, input, output):
-            output.requires_grad_(True)
-        model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+        model.enable_input_require_grads()
+        # # as Whisper model uses Conv layer in encoder, checkpointing disables grad computation
+        # # to avoid this, make the inputs trainable
+        # def make_inputs_require_grad(module, input, output):
+        #     output.requires_grad_(True)
+        # model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
-        ds_train_vect = load_from_disk(f"{SAVE_DIR}/combined_canto_train")
     else:
         output_dir="./model_out_02"
         peft_model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-10000"   
@@ -95,11 +114,7 @@ if __name__ == "__main__":
         model.enable_input_require_grads()
         model.print_trainable_parameters()
 
-        ds_canto_asr = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_asr*")]
-        ds_canto_map = [load_from_disk(dir) for dir in glob.glob(f"{SAVE_DIR}/canto_map*")]
-        cv_trains = [load_from_disk(f"{SAVE_DIR}/cv_train"), load_from_disk(f"{SAVE_DIR}/cv_train_2")]
-        ds_train_vect = concatenate_datasets(cv_trains + ds_canto_asr + ds_canto_map)
-
+    ds_train_vect = load_from_disk(f"{SAVE_DIR}/combined_canto_train")
 
     print(f"Train Len: {ds_train_vect}")
     ds_train_vect = ds_train_vect.filter(
@@ -123,7 +138,7 @@ if __name__ == "__main__":
         learning_rate=5e-5,
         warmup_steps=1000 if TRAIN_FROM_SCRATCH else 0,
         gradient_checkpointing=True,
-        num_train_epochs=3 if TRAIN_FROM_SCRATCH else 5,
+        num_train_epochs=5 if TRAIN_FROM_SCRATCH else 5,
         fp16=True,
         evaluation_strategy="steps",
         per_device_eval_batch_size=10,
@@ -148,7 +163,8 @@ if __name__ == "__main__":
         train_dataset=ds_train_vect,
         eval_dataset=ds_test_vect,
         data_collator=data_collator,
-        tokenizer=processor
+        tokenizer=processor,
+        compute_metrics=compute_metrics
     )
 
     trainer.train()
