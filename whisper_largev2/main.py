@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 import torch
 
-from datasets import load_from_disk, concatenate_datasets
+
+from datasets import IterableDataset, IterableDatasetDict, Audio, load_from_disk
 from transformers.trainer_pt_utils import IterableDatasetShard
 
 from transformers import WhisperProcessor, WhisperForConditionalGeneration, Seq2SeqTrainingArguments
@@ -19,7 +20,7 @@ import evaluate
 WHISPER_MODEL = "openai/whisper-large-v2"
 LANGUAGE = "zh"
 TASK = "transcribe"
-TRAIN_FROM_SCRATCH = True
+TRAIN_FROM_SCRATCH = False
 SAVE_DIR = "/exp/whisper_yue/whisper_large_data"
 
 
@@ -81,6 +82,15 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         return batch
 
 
+class ShuffleCallback(TrainerCallback):
+    def on_epoch_begin(self, args, state, control, train_dataloader, **kwargs):
+        if isinstance(train_dataloader.dataset, IterableDatasetShard):
+            pass  # set_epoch() is handled by the Trainer
+        elif isinstance(train_dataloader.dataset, IterableDataset):
+            train_dataloader.dataset.set_epoch(train_dataloader.dataset._epoch + 1)
+
+
+
 if __name__ == "__main__":
     processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, language=LANGUAGE, task=TASK) 
     model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=False)
@@ -94,7 +104,7 @@ if __name__ == "__main__":
         model.config.suppress_tokens = []
         print("Loaded PEFT LORA Model")
 
-        config = LoraConfig(use_dora=True, r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
+        config = LoraConfig(use_dora=True, r=64, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
         model = get_peft_model(model, config)
         model.print_trainable_parameters()
         model.config.use_cache = False
@@ -108,7 +118,7 @@ if __name__ == "__main__":
 
     else:
         output_dir="./model_out_02"
-        peft_model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_01/checkpoint-10000"   
+        peft_model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_02/checkpoint-5200"   
 
         model = PeftModel.from_pretrained(model, peft_model_id, is_trainable=True)
         model.enable_input_require_grads()
@@ -133,10 +143,10 @@ if __name__ == "__main__":
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=14,
+        per_device_train_batch_size=16,
         gradient_accumulation_steps=8,  # increase by 2x for every 2x decrease in batch size
-        learning_rate=5e-5,
-        warmup_steps=1000 if TRAIN_FROM_SCRATCH else 0,
+        learning_rate=2e-4 if TRAIN_FROM_SCRATCH else 0.8e-5,
+        warmup_steps=2000 if TRAIN_FROM_SCRATCH else 0,
         gradient_checkpointing=True,
         num_train_epochs=5 if TRAIN_FROM_SCRATCH else 5,
         fp16=True,
@@ -144,8 +154,8 @@ if __name__ == "__main__":
         per_device_eval_batch_size=10,
         predict_with_generate=True,
         generation_max_length=225,
-        save_steps=500 if TRAIN_FROM_SCRATCH else 200,
-        eval_steps=500 if TRAIN_FROM_SCRATCH else 200,
+        save_steps=500 if TRAIN_FROM_SCRATCH else 500,
+        eval_steps=500 if TRAIN_FROM_SCRATCH else 500,
         logging_steps=100,
         report_to=["tensorboard"],
         load_best_model_at_end=True,
@@ -164,7 +174,8 @@ if __name__ == "__main__":
         eval_dataset=ds_test_vect,
         data_collator=data_collator,
         tokenizer=processor,
-        compute_metrics=compute_metrics
+        compute_metrics=compute_metrics,
+        callbacks=[ShuffleCallback()],
     )
 
     trainer.train()
