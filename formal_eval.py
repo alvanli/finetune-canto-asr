@@ -5,6 +5,7 @@ import evaluate
 from datasets import load_dataset, Audio
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, AutoModelForCTC, Wav2Vec2BertProcessor, Wav2Vec2Processor
 from peft import PeftConfig, PeftModel
+import librosa
 
 import sys
 sys.path.append('/exp/whisper_yue/finetune-whisper-canto')
@@ -13,14 +14,18 @@ from normalize_canto import normalize
 
 NORMALIZE = True
 IS_WAV2VEC = False
-IS_LORA = True
+IS_LORA = False
 USE_GPU = True
+LANGUAGE = 'zh'
+
 # model_id = "alvanlii/wav2vec2-BERT-cantonese"
 # model_id = "simonl0909/whisper-large-v2-cantonese"
 # model_id = 'CAiRE/wav2vec2-large-xlsr-53-cantonese'
 # model_id = 'alvanlii/whisper-largev2-cantonese-peft-lora'
-model_id = 'Oblivion208/whisper-large-v2-lora-cantonese'
-
+# model_id = 'Oblivion208/whisper-large-v2-lora-cantonese'
+# model_id = '/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/checkpoint-6500'
+model_id = 'openai/whisper-large-v3'
+model_id = 'Scrya/whisper-large-v2-cantonese'
 metric = evaluate.load("cer")
 
 if USE_GPU:
@@ -58,7 +63,7 @@ if __name__ == "__main__":
     elif IS_LORA:
         processor = None
     else:
-        processor = AutoProcessor.from_pretrained(model_id)
+        processor = AutoProcessor.from_pretrained(model_id, language=LANGUAGE)
 
     if IS_WAV2VEC:
         model = AutoModelForCTC.from_pretrained(
@@ -80,17 +85,21 @@ if __name__ == "__main__":
             torch_dtype=torch_dtype,
             low_cpu_mem_usage=True,
             use_safetensors=True,
-            attn_implementation="sdpa",
+            attn_implementation="sdpa"
         )
+        # model.generation_config.language = LANGUAGE
         model.to(device)
 
 
     all_time = 0
+    total_seconds = 0
     predictions = []
     references = []
 
     for sample in tqdm(dataset):
         audio = sample["audio"]
+        length_seconds = librosa.get_duration(y=audio['array'], sr=16_000)
+        total_seconds += length_seconds
         inputs = processor(audio["array"], sampling_rate=16_000, return_tensors="pt")
         inputs = inputs.to(device=device, dtype=torch_dtype)
         
@@ -115,9 +124,9 @@ if __name__ == "__main__":
 
         references.append(ground_truth)
         
-        # print(f"{predictions[-1]}==={references[-1]}")
+        print(f"{predictions[-1]}==={references[-1]}")
         
-    print(f"took {all_time} for {len(references)} samples on GPU")
+    print(f"took {all_time} for {len(references)} ({total_seconds}s) samples on GPU")
     cer = metric.compute(references=references, predictions=predictions)
     cer = round(100 * cer, 2)
     print(cer)

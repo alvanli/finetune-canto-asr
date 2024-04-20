@@ -13,9 +13,9 @@ from normalize_canto import normalize
 metric = evaluate.load("cer")
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
-device='cpu'
+# device='cpu'
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-torch_dtype = torch.float32
+# torch_dtype = torch.float32
 
 def assisted_generate_with_time(model, inputs, **kwargs):
     start_time = time.time()
@@ -28,7 +28,7 @@ if __name__ == "__main__":
     dataset = load_dataset("mozilla-foundation/common_voice_16_0", "yue", split="test", use_auth_token=True)
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16_000))
 
-    model_id = "simonl0909/whisper-large-v2-cantonese"
+    model_id = "Scrya/whisper-large-v2-cantonese"
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_id,
         torch_dtype=torch_dtype,
