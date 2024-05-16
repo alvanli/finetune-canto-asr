@@ -1,34 +1,29 @@
 # https://huggingface.co/docs/datasets/audio_dataset
-import os, glob
-os.environ['LD_LIBRARY_PATH']='/usr/lib/x86_64-linux-gnu/:/opt/conda/lib/'
+import os
 import datasets
 from pathlib import Path
 datasets.config.DOWNLOADED_DATASETS_PATH = Path("/exp/hf_ds")
+
+from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 from dataclasses import dataclass
 from typing import Any, Dict, List, Union
+
 import torch
 
-
-from datasets import IterableDataset, IterableDatasetDict, Audio, load_from_disk
+from datasets import interleave_datasets, load_dataset, IterableDataset, IterableDatasetDict, Audio, load_from_disk
 from transformers.trainer_pt_utils import IterableDatasetShard
 
 from transformers import WhisperProcessor, WhisperForConditionalGeneration, Seq2SeqTrainingArguments
 from transformers import TrainerCallback, Seq2SeqTrainer
-from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model, PeftConfig
+
 import evaluate
-
-WHISPER_MODEL = "openai/whisper-large-v2"
-LANGUAGE = "zh"
-TASK = "transcribe"
-TRAIN_FROM_SCRATCH = False
-SAVE_DIR = "/exp/whisper_yue/whisper_large_data"
-
 
 metric = evaluate.load("cer")
 
 do_lower_case = False
 do_remove_punctuation = False
 
+normalizer = BasicTextNormalizer()
 max_input_length = 30.0
 max_label_length = 448
 
@@ -38,22 +33,8 @@ def is_audio_in_length_range(length):
 def is_label_in_length_range(labels):
     return len(labels) < max_label_length
 
-
-def compute_metrics(pred):
-    pred_ids = pred.predictions
-    label_ids = pred.label_ids
-
-    # replace -100 with the pad_token_id
-    label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
-
-    # we do not want to group tokens when computing the metrics
-    pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
-    label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-
-    cer = 100 * metric.compute(predictions=pred_str, references=label_str)
-
-    return {"cer": cer}
-
+def is_audio_right_size(input_features):
+    return len(input_features)==80 and len(input_features[0])==3000
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -64,6 +45,7 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         # first treat the audio inputs by simply returning torch tensors
         input_features = [{"input_features": feature["input_features"]} for feature in features]
         batch = self.processor.feature_extractor.pad(input_features, return_tensors="pt")
+
         # get the tokenized label sequences
         label_features = [{"input_ids": feature["labels"]} for feature in features]
         # pad the labels to max length
@@ -81,7 +63,6 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         return batch
 
-
 class ShuffleCallback(TrainerCallback):
     def on_epoch_begin(self, args, state, control, train_dataloader, **kwargs):
         if isinstance(train_dataloader.dataset, IterableDatasetShard):
@@ -90,79 +71,78 @@ class ShuffleCallback(TrainerCallback):
             train_dataloader.dataset.set_epoch(train_dataloader.dataset._epoch + 1)
 
 
+SAVE_DIR = "/exp/whisper_yue/whisper_data"
+PRETRAINED_MODEL = 'Scrya/whisper-large-v2-cantonese'
 
 if __name__ == "__main__":
-    processor = WhisperProcessor.from_pretrained(WHISPER_MODEL, language=LANGUAGE, task=TASK) 
-    model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, load_in_8bit=False)
+    processor = WhisperProcessor.from_pretrained(PRETRAINED_MODEL, task="transcribe")
+    data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
+    model = WhisperForConditionalGeneration.from_pretrained(PRETRAINED_MODEL)
 
-    model.generation_config.language = LANGUAGE
+    for param in model.model.encoder.parameters():
+        param.requires_grad = False
+    print("Loaded model")
 
-    if TRAIN_FROM_SCRATCH: 
-        output_dir="./model_out_01"
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+    model.config.use_cache = False
 
-        model.config.forced_decoder_ids = None
-        model.config.suppress_tokens = []
-        print("Loaded PEFT LORA Model")
+    ds_train_vect = load_from_disk(f"{SAVE_DIR}/cv_train")
+    ds_test_vect = load_from_disk(f"{SAVE_DIR}/cv_test")
 
-        config = LoraConfig(use_dora=True, r=64, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
-        model = get_peft_model(model, config)
-        model.print_trainable_parameters()
-        model.config.use_cache = False
-
-        model.enable_input_require_grads()
-        # # as Whisper model uses Conv layer in encoder, checkpointing disables grad computation
-        # # to avoid this, make the inputs trainable
-        # def make_inputs_require_grad(module, input, output):
-        #     output.requires_grad_(True)
-        # model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
-
-    else:
-        output_dir="./model_out_02"
-        peft_model_id = "/exp/whisper_yue/finetune-whisper-canto/whisper_largev2/model_out_02/checkpoint-5200"   
-
-        model = PeftModel.from_pretrained(model, peft_model_id, is_trainable=True)
-        model.enable_input_require_grads()
-        model.print_trainable_parameters()
-
-    ds_train_vect = load_from_disk(f"{SAVE_DIR}/combined_canto_train")
-
-    print(f"Train Len: {ds_train_vect}")
+    print(len(ds_train_vect))
     ds_train_vect = ds_train_vect.filter(
         is_audio_in_length_range,
-        input_columns=["input_length"]
+        input_columns=["input_length"],
     )
     ds_train_vect = ds_train_vect.filter(
         is_label_in_length_range,
         input_columns=["labels"],
     )
-    print(f"Train Len: {ds_train_vect}")
-    ds_test_vect = load_from_disk(f"{SAVE_DIR}/cv_test")
+    print(len(ds_train_vect))
+
     print("Loaded datasets")
 
-    data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
+
+    def compute_metrics(pred):
+        pred_ids = pred.predictions
+        label_ids = pred.label_ids
+
+        # replace -100 with the pad_token_id
+        label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
+
+        # we do not want to group tokens when computing the metrics
+        pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+        label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+
+        cer = 100 * metric.compute(predictions=pred_str, references=label_str)
+
+        return {"cer": cer}
+
+    output_dir="./model_out"
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=16,
-        gradient_accumulation_steps=8,  # increase by 2x for every 2x decrease in batch size
-        learning_rate=2e-4 if TRAIN_FROM_SCRATCH else 0.8e-5,
-        warmup_steps=2000 if TRAIN_FROM_SCRATCH else 0,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=22,  # increase by 2x for every 2x decrease in batch size
+        learning_rate=1e-5,
+        warmup_steps=300,
         gradient_checkpointing=True,
-        num_train_epochs=5 if TRAIN_FROM_SCRATCH else 5,
+        num_train_epochs=2,
         fp16=True,
         evaluation_strategy="steps",
-        per_device_eval_batch_size=10,
+        per_device_eval_batch_size=8,
         predict_with_generate=True,
         generation_max_length=225,
-        save_steps=500 if TRAIN_FROM_SCRATCH else 500,
-        eval_steps=500 if TRAIN_FROM_SCRATCH else 500,
-        logging_steps=100,
+        save_steps=100,
+        eval_steps=100,
+        logging_steps=25,
         report_to=["tensorboard"],
         load_best_model_at_end=True,
+        metric_for_best_model="cer",
+        greater_is_better=False,
         push_to_hub=False,
-        save_total_limit=3,
-        remove_unused_columns=False,  # required as the PeftModel forward doesn't have the signature of the wrapped model's forward
-        label_names=["labels"],  # same reason as above
+        save_total_limit=2
     )
 
     print("Starting Trainer...")
@@ -173,10 +153,13 @@ if __name__ == "__main__":
         train_dataset=ds_train_vect,
         eval_dataset=ds_test_vect,
         data_collator=data_collator,
-        tokenizer=processor,
         compute_metrics=compute_metrics,
+        tokenizer=processor,
         callbacks=[ShuffleCallback()],
     )
 
+
+    model.save_pretrained(output_dir)
+    processor.save_pretrained(output_dir)
+
     trainer.train()
-  
