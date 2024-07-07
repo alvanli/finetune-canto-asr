@@ -1,6 +1,6 @@
 accelerate launch run_distillation.py \
-  --model_name_or_path "./distil-small-init" \
-  --teacher_model_name_or_path "alvanlii/whisper-small-cantonese" \
+  --model_name_or_path "./distil-large-v2-init" \
+  --teacher_model_name_or_path "Scrya/whisper-large-v2-cantonese" \
   --eval_steps 500 \
   --save_steps 500 \
   --warmup_steps 1000 \
@@ -10,13 +10,13 @@ accelerate launch run_distillation.py \
   --save_total_limit 3 \
   --max_steps 20000 \
   --cer_threshold 15 \
-  --per_device_train_batch_size 32 \
-  --per_device_eval_batch_size 24 \
-  --dataloader_num_workers 16 \
-  --preprocessing_num_workers 16 \
+  --per_device_train_batch_size 8 \
+  --per_device_eval_batch_size 8 \
+  --dataloader_num_workers 8 \
+  --preprocessing_num_workers 8 \
   --ddp_timeout 7200 \
   --dtype "bfloat16" \
-  --output_dir "./distilled_boi_01" \
+  --output_dir "./distilled_lv2_01" \
   --do_train \
   --do_eval \
   --gradient_checkpointing \
